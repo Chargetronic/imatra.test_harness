@@ -221,22 +221,12 @@ t4() {
   wait_for "bound again" "$API/devices/$DEV" ".registry.state == \"bound\" and .registry.binding_ver > $ver"
   ver=$(jq -r '.registry.binding_ver' <<<"$LAST")
   wait_feed device.bound "$cur"
-
-  # 3. revoked: served no more at once (blocked); bound again: served again
-  layer_cmd revoke "$DEV"
-  wait_for "revoked: blocked at Imatra" "$API/devices/$DEV" \
-    ".registry.state == \"revoked\" and .registry.binding_ver > $ver and .blocked != null"
-  ver=$(jq -r '.registry.binding_ver' <<<"$LAST")
-  wait_feed device.revoked "$cur"
-  layer_cmd bind "$DEV"
-  wait_for "bound after the revocation: unblocked" "$API/devices/$DEV" \
-    ".registry.state == \"bound\" and .registry.binding_ver > $ver and .blocked == null"
-  ver=$(jq -r '.registry.binding_ver' <<<"$LAST")
   local back; back=$(date -u -d '-60 sec' +%Y-%m-%dT%H:%M:%SZ); local back_at; back_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  wait_for "a TLS session ended after the device was served again" "$API/sessions?device=$DEV&from=$back&open=false" \
+  $H restart station ev >/dev/null 2>&1   # a fresh plug-in after the binding changed
+  wait_for "a TLS session ended after binding again" "$API/sessions?device=$DEV&from=$back&open=false" \
     "[.sessions[] | select(.ended_at > \"$back_at\" and .mode == \"iso15118-2\" and .v2g_sessions > 0)] | length > 0"
 
-  # 4. a late message (lower binding_ver) and a repeat (the same one) change nothing
+  # 3. a late message (lower binding_ver) and a repeat (the same one) change nothing
   local now; now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   imatra_pub "registry/dev/$DEV" "{\"v\":1,\"device_id\":\"$DEV\",\"state\":\"revoked\",\"binding_ver\":$(( ver - 1 )),\"at\":\"$now\"}"
   imatra_pub "registry/dev/$DEV" "{\"v\":1,\"device_id\":\"$DEV\",\"state\":\"unbound\",\"binding_ver\":$ver,\"at\":\"$now\"}"
@@ -245,7 +235,7 @@ t4() {
     || fail "a late or repeated registry message changed the device"
   log "ok: a late message (binding_ver $(( ver - 1 ))) and a repeat ($ver) changed nothing"
 
-  # 5. a digest that differs: Imatra reads the registry again, writes system.registry_mismatch, keeps the state
+  # 4. a digest that differs: Imatra reads the registry again, writes system.registry_mismatch, keeps the state
   local cur2; cur2=$(api "$API/events?cursor=0&limit=1000" | jq -r '.next_cursor')
   imatra_pub "registry/digest" "{\"v\":1,\"bound\":99,\"max_binding_ver\":1,\"at\":\"$now\"}"
   local end=$(( $(date +%s) + 60 )) got=""
@@ -258,6 +248,13 @@ t4() {
   api "$API/devices/$DEV" | jq -e ".registry.state == \"bound\" and .registry.binding_ver == $ver" >/dev/null \
     || fail "the device changed after reading the registry again"
   log "ok: a differing digest: system.registry_mismatch, registry read again, the device unchanged"
+
+  # 5. revoked (last: the test layer treats a revocation as final; Imatra also
+  #    serves a device bound again after one, see t5): served no more at once
+  layer_cmd revoke "$DEV"
+  wait_for "revoked: blocked at Imatra" "$API/devices/$DEV" \
+    ".registry.state == \"revoked\" and .registry.binding_ver > $ver and .blocked != null"
+  wait_feed device.revoked "$cur"
   stop_watch
   log "T4 passed"
 }
