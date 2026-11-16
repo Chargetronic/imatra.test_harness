@@ -1,0 +1,12 @@
+# Added to the Imatra deployment's compose files by compose/up.sh: the broker
+# also joins the harness link network, under the name the test layer put in
+# its certificate (mqtt).
+services:
+  mqtt:
+    networks:
+      default: {}
+      harness-link: { aliases: [mqtt] }
+networks:
+  harness-link:
+    external: true
+    name: imatra-harness-link

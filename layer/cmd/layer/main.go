@@ -449,6 +449,7 @@ func serve() error {
 		st.Update(func(s *store.State) error {
 			var left []store.Message
 			for _, m := range s.Outbox {
+				defer func(dep string) { delete(lastDigest, dep) }(m.Deployment) // a change: a fresh digest follows
 				c := pubs[m.Deployment]
 				if c == nil || !c.IsConnectionOpen() {
 					left = append(left, m)
@@ -461,7 +462,7 @@ func serve() error {
 			}
 			s.Outbox = left
 			for id, c := range pubs {
-				// the digest goes once a day, only with an empty queue for the deployment
+				// the digest goes after every change and once a day, only with an empty queue for the deployment
 				if time.Since(lastDigest[id]) < 24*time.Hour || !c.IsConnectionOpen() || waiting(s, id) {
 					continue
 				}

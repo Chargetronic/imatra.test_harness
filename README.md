@@ -16,7 +16,9 @@ It provides the three counterparts an Imatra deployment talks to:
 deployment; [`conformance/`](conformance/) checks that every exchange follows
 the Imatra contracts.
 
-> **Status:** scaffold. Components are not implemented yet.
+> **Status:** the test layer, the test station and the test EV run together
+> with an Imatra deployment: `compose/up.sh`, then `compose/e2e.sh` watches one
+> charging session end to end.
 
 ## Contracts
 

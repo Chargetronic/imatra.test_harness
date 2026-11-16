@@ -1,0 +1,9 @@
+{
+  "supportedProtocols": ["ISO_15118_2"],
+  "supportedEnergyServices": ["AC"],
+  "isCertInstallNeeded": false,
+  "useTls": true,
+  "enforceTls": true,
+  "sdpRetryCycles": 10,
+  "chargeLoopCycle": 30
+}

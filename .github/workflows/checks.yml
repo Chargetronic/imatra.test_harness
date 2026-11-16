@@ -62,3 +62,48 @@ jobs:
       - name: Logs
         if: failure()
         run: docker compose -f compose/layer.yml logs
+
+  station:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install -r conformance/requirements.txt -r station/requirements.txt pytest
+      - name: Station protocol logic, every message against the contracts
+        working-directory: station
+        run: python -m pytest -q tests
+
+  e2e:
+    # Imatra (pinned) + test layer + test station + test EV, one full session.
+    # Needs read access to the Imatra repository while it is private.
+    runs-on: ubuntu-latest
+    needs: [layer, station]
+    env:
+      HAS_TOKEN: ${{ secrets.CONTRACTS_READ_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: ref
+        run: echo "imatra=$(cat contracts/IMATRA_REF)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        if: env.HAS_TOKEN == 'true'
+        with:
+          repository: Chargetronic/imatra.iso15118_server
+          ref: ${{ steps.ref.outputs.imatra }}
+          path: imatra
+          token: ${{ secrets.CONTRACTS_READ_TOKEN }}
+      - name: Start Imatra and the harness
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/up.sh
+      - name: One charging session end to end
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra WATCH_S=300 compose/e2e.sh
+      - name: Logs
+        if: failure() && env.HAS_TOKEN == 'true'
+        run: |
+          docker compose -f compose/harness.yml logs --tail 200 layer station ev
+          docker compose -p imatra-harness-server --project-directory imatra -f imatra/docker-compose.yml logs --tail 100 engine mqtt
+      - name: No token
+        if: env.HAS_TOKEN != 'true'
+        run: echo "CONTRACTS_READ_TOKEN is not set; end-to-end test skipped"

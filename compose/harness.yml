@@ -1,0 +1,83 @@
+# The harness next to an Imatra deployment (profile layer). Started by
+# compose/up.sh, which also prepares the Imatra deployment; see compose/README.md.
+name: imatra-harness
+
+services:
+  layer-init:
+    build: ../layer
+    command: ["layer", "init"]
+    environment: &layer-env
+      DEPLOYMENT: test-deployment
+      DEPLOYMENT_ADDRESS: mqtt:8883
+      DEPLOYMENT_BROKER: mqtt:8883
+      DEPLOYMENT_DNS: mqtt
+    volumes: [layer-data:/data]
+    network_mode: none
+  layer-mqtt:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    depends_on:
+      layer-init: { condition: service_completed_successfully }
+    volumes:
+      - layer-data:/data:ro
+      - ../layer/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ../layer/mosquitto/acl:/mosquitto/config/acl:ro
+    networks: [harness]
+  layer:
+    build: ../layer
+    restart: unless-stopped
+    environment: *layer-env
+    depends_on:
+      layer-init: { condition: service_completed_successfully }
+      layer-mqtt: { condition: service_started }
+    volumes: [layer-data:/data, boot:/boot]
+    networks: [harness, link]
+  station:
+    build: ../station
+    restart: unless-stopped
+    command: ["--bootstrap", "/boot/dev-01.json", "--v2g-subnet", "fd15:118::/64", "--replug-s", "${REPLUG_S:-30}"]
+    volumes: [boot:/boot:ro]
+    networks:
+      harness: {}
+      link: {}
+      v2g: { ipv6_address: "fd15:118::10" }
+  ev:
+    build: ../ev
+    restart: unless-stopped
+    depends_on: [station]
+    volumes: [layer-data:/layer-data:ro]
+    networks:
+      v2g: { ipv6_address: "fd15:118::20" }
+
+  # profile e2e: watches every exchange on the Imatra broker (compose/e2e.sh)
+  watch:
+    profiles: [e2e]
+    image: python:3.12-alpine
+    working_dir: /harness
+    command: ["sh", "-c", "pip install -q -r conformance/requirements.txt && python compose/smoke/e2e_watch.py"]
+    environment:
+      MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD:-}
+      WATCH_S: ${WATCH_S:-240}
+    volumes: ["..:/harness:ro"]
+    networks: [link, default]
+
+volumes:
+  layer-data:
+  boot:
+
+networks:
+  default:
+  harness:
+    internal: true
+  # the virtual link between the station and the EV (no SLAC, no PLC: TK-6)
+  v2g:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "fd15:118::/64"
+  # the harness ↔ the Imatra broker (joined by Imatra's mqtt service through
+  # compose/imatra.override.yml)
+  link:
+    external: true
+    name: imatra-harness-link  # created by compose/up.sh
