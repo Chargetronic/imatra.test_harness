@@ -1,7 +1,15 @@
 """Command line.
 
-  python -m conformance check TOPIC [FILE]
+  python -m conformance [--contracts DIR] check TOPIC [FILE]
       Check one message (FILE or stdin). Exit 1 on any problem.
+
+  python -m conformance [--contracts DIR] batch FILE
+      Check messages given as JSON lines {"topic": ..., "payload": {...}}
+      (FILE or - for stdin), for example the answers an implementation's own
+      tests produce. Exit 1 on any problem or on an empty file.
+
+  --contracts DIR: the directory with asyncapi-{device,registry,layer}.yaml
+  (default: contracts/ of this repository; e.g. spec/ of an Imatra checkout).
 
   python -m conformance sniff --host H [--port P] [--tls --cafile F --cert F --key F]
                               [--username U --password-env VAR] [--topic T ...]
@@ -20,17 +28,41 @@ import os
 import sys
 import time
 
-from .spec import load
+from pathlib import Path
+
+from .spec import CONTRACTS_DIR, load
 
 SIGN_TIMEOUT_S = 3.0
 
 
 def cmd_check(a) -> int:
     data = open(a.file, "rb").read() if a.file else sys.stdin.buffer.read()
-    problems = load().check(a.topic, data)
+    problems = load(a.contracts).check(a.topic, data)
     for p in problems:
         print(p)
     return 1 if problems else 0
+
+
+def cmd_batch(a) -> int:
+    contracts = load(a.contracts)
+    f = sys.stdin if a.file == "-" else open(a.file, encoding="utf-8")
+    n = bad = 0
+    for i, line in enumerate(f, 1):
+        if not line.strip():
+            continue
+        n += 1
+        try:
+            m = json.loads(line)
+            problems = contracts.check(m["topic"], m["payload"])
+        except (ValueError, KeyError, TypeError) as e:
+            print(f"line {i}: not a {{topic, payload}} object: {e}")
+            bad += 1
+            continue
+        for p in problems:
+            print(f"line {i}: {p}")
+        bad += bool(problems)
+    print(f"{n} message(s), {bad} not following the contracts")
+    return 1 if bad or n == 0 else 0
 
 
 class Pairs:
@@ -70,7 +102,7 @@ def cmd_sniff(a) -> int:
     except ImportError:
         print("sniff needs paho-mqtt: pip install paho-mqtt", file=sys.stderr)
         return 2
-    contracts, pairs = load(), Pairs()
+    contracts, pairs = load(a.contracts), Pairs()
     count = {"messages": 0, "problems": 0}
 
     def report(line: str):
@@ -113,7 +145,10 @@ def cmd_sniff(a) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="conformance")
+    ap.add_argument("--contracts", type=Path, default=CONTRACTS_DIR)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    bt = sub.add_parser("batch")
+    bt.add_argument("file")
     ck = sub.add_parser("check")
     ck.add_argument("topic")
     ck.add_argument("file", nargs="?")
@@ -132,7 +167,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "sniff" and not a.topic:
         a.topic = ["dev/#", "registry/#"]
-    return {"check": cmd_check, "sniff": cmd_sniff}[a.cmd](a)
+    return {"check": cmd_check, "batch": cmd_batch, "sniff": cmd_sniff}[a.cmd](a)
 
 
 if __name__ == "__main__":

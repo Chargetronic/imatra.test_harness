@@ -18,6 +18,9 @@ python -m conformance check dev/dev-01/status message.json
 python -m conformance sniff --host localhost --port 1883 \
   --username server --password-env MQTT_SERVER_PASSWORD --seconds 600
 
+# answers an implementation produced in its own tests (JSON lines)
+python -m conformance --contracts ../imatra/spec batch answers.jsonl
+
 python -m pytest tests   # the checker against the contracts themselves
 ```
 

@@ -103,3 +103,17 @@ def test_cli_check(tmp_path, capsys):
     assert main(["check", "registry/digest", str(f)]) == 0
     f.write_text('{"v":1}')
     assert main(["check", "registry/digest", str(f)]) == 1
+
+
+def test_cli_batch(tmp_path):
+    from conformance.__main__ import main
+    from conformance.spec import CONTRACTS_DIR
+
+    f = tmp_path / "m.jsonl"
+    f.write_text('{"topic":"dev/d/sign/res","payload":{"v":1,"id":"1","sig":"MEUC"}}\n'
+                 '{"topic":"dev/d/cred/res","payload":{"v":1,"id":"2","error":"unbound"}}\n')
+    assert main(["--contracts", str(CONTRACTS_DIR), "batch", str(f)]) == 0
+    f.write_text('{"topic":"dev/d/sign/res","payload":{"v":1,"id":"1"}}\n')
+    assert main(["batch", str(f)]) == 1
+    f.write_text("")
+    assert main(["batch", str(f)]) == 1  # nothing checked is a failure
