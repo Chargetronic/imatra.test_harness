@@ -58,7 +58,9 @@ services:
     environment:
       MQTT_SERVER_PASSWORD: ${MQTT_SERVER_PASSWORD:-}
       WATCH_S: ${WATCH_S:-240}
-    volumes: ["..:/harness:ro"]
+      REQUIRE_STEPS: ${REQUIRE_STEPS:-1}
+      STOP_FILE: ${STOP_FILE:-}
+    volumes: ["..:/harness:ro", "${WATCH_TMP:-/tmp}:/watch-tmp"]
     networks: [link, default]
 
 volumes:

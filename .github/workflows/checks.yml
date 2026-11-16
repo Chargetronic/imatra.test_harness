@@ -99,6 +99,9 @@ jobs:
       - name: One charging session end to end
         if: env.HAS_TOKEN == 'true'
         run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra WATCH_S=300 compose/e2e.sh
+      - name: "Scenario T2: operator commands during a session"
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t2
       - name: Logs
         if: failure() && env.HAS_TOKEN == 'true'
         run: |
