@@ -1,0 +1,163 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the project. See NOTICE.
+
+asyncapi: 3.0.0
+info:
+  title: Device registry
+  version: 1.0.0
+  description: |
+    How the service layer tells a deployment which devices are its own. The
+    layer publishes into the deployment's broker; neither side calls the
+    other's HTTP API.
+
+    Behaviour of the server on these messages and the rules of a move between
+    operators: `docs/registry.md`; the business rules catalogue:
+    `docs/rules.md`. Data-flow diagrams: `docs/architecture/dataflow-service.md`.
+
+    Unknown fields are ignored (the list grows); unknown keys inside `rules`
+    are kept and shown to the operator. There is no personal data.
+    Operations are written from the **server's** side.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+defaultContentType: application/json
+
+servers:
+  deployment:
+    host: '{broker}:8883'
+    protocol: mqtts
+    protocolVersion: 3.1.1
+    description: |
+      Device listener of the deployment's broker. The layer connects with a
+      certificate under the deployment's root whose CN is `layer` (reserved; 30
+      days, issued by the layer from the cloud root). ACL: write `registry/#`
+      only; devices may not write it.
+    variables:
+      broker:
+        description: DNS name of the deployment's broker
+    security:
+      - $ref: '#/components/securitySchemes/layerCertificate'
+  services:
+    host: 'mqtt:1883'
+    protocol: mqtt
+    protocolVersion: 3.1.1
+    description: Internal listener; `scripts/registry.sh` publishes the same messages here when there is no layer (`PKI_MODE=own`).
+    security:
+      - $ref: '#/components/securitySchemes/serviceAccount'
+
+channels:
+  registryDevice:
+    address: registry/dev/{deviceId}
+    description: One retained message per device, the latest state of its binding to this deployment.
+    parameters:
+      deviceId:
+        description: Device id = CN of the device certificate.
+    messages:
+      registryEntry: { $ref: '#/components/messages/registryEntry' }
+  registryDigest:
+    address: registry/digest
+    description: Once a day, sent only when the layer's queue for this deployment is empty.
+    messages:
+      registryDigest: { $ref: '#/components/messages/registryDigest' }
+
+operations:
+  receiveRegistryEntry:
+    action: receive
+    channel: { $ref: '#/channels/registryDevice' }
+    summary: bound / unbound / revoked, with type, coarse location, time zone and business rules
+    description: |
+      Read by the leading engine only, with an ordinary subscription (a shared
+      one gets no retained messages). Applied only if `binding_ver` is greater
+      than the stored one; a new leader re-reads all, repeats change nothing.
+      Feed events: `device.bound`, `device.unbound`, `device.revoked`.
+    bindings:
+      mqtt: { qos: 1, retain: true }
+  receiveRegistryDigest:
+    action: receive
+    channel: { $ref: '#/channels/registryDigest' }
+    summary: Daily reconciliation; a mismatch → re-read and `system.registry_mismatch`
+    bindings:
+      mqtt: { qos: 1, retain: true }
+
+components:
+  securitySchemes:
+    layerCertificate:
+      type: X509
+      description: Client certificate with CN `layer` under the deployment's root.
+    serviceAccount:
+      type: userPassword
+      description: Account `server` of the internal listener.
+
+  messages:
+    registryEntry:
+      name: RegistryEntry
+      payload: { $ref: '#/components/schemas/RegistryEntry' }
+      examples:
+        - name: bound
+          payload:
+            v: 1
+            device_id: dev-01
+            state: bound
+            type: adapter
+            lat: 61.172
+            lon: 28.753
+            binding_ver: 12
+            at: '2026-11-15T22:00:00Z'
+            tz: Europe/Helsinki
+            rules: { rated_current_a: 16, phases: 3, meter: clamp, supply: { below_pct: 20, min_current_a: 6, minutes: 20 } }
+        - name: unbound
+          payload: { v: 1, device_id: dev-01, state: unbound, binding_ver: 13, at: '2026-11-16T22:00:00Z' }
+    registryDigest:
+      name: RegistryDigest
+      payload: { $ref: '#/components/schemas/RegistryDigest' }
+      examples:
+        - name: daily
+          payload: { v: 1, bound: 19000, max_binding_ver: 48211, at: '2026-11-15T03:00:00Z' }
+
+  schemas:
+    RegistryEntry:
+      type: object
+      required: [v, device_id, state, binding_ver, at]
+      properties:
+        v: { type: integer, const: 1 }
+        device_id: { type: string, description: 'The device (its certificate CN)' }
+        state:
+          type: string
+          enum: [bound, unbound, revoked]
+          description: 'bound: this operator''s device; unbound: no longer (a running session goes on to its end); revoked: served no more, at once'
+        type: { type: string, description: 'Reference only; the server''s behaviour does not depend on it. Neutral values, e.g. adapter, station, v2g-station' }
+        lat: { type: number, description: 'Coarse location, 3 decimals (~100 m); may be absent' }
+        lon: { type: number }
+        binding_ver: { type: integer, format: int64, description: 'Grows with every change; applied only if greater than the stored one' }
+        at: { type: string, format: date-time, description: 'Time of the fact, UTC' }
+        tz: { type: string, description: 'The user''s IANA time zone (a move takes effect from the user''s midnight)' }
+        rules: { $ref: '#/components/schemas/Rules' }
+    Rules:
+      type: object
+      description: 'Business rules: an open set. Absent → the stored set stays. Catalogue: docs/rules.md.'
+      additionalProperties: true
+      properties:
+        rated_current_a: { type: number, minimum: 6, maximum: 1000, description: 'Device rating: the EV is never offered more' }
+        install_max_current_a: { type: number, minimum: 6, maximum: 1000, description: 'Installation limit (breaker)' }
+        phases: { type: integer, enum: [1, 3] }
+        meter: { type: string, enum: [clamp, certified], default: clamp }
+        supply:
+          type: object
+          description: 'Charging windows for the device''s own battery'
+          required: [below_pct]
+          properties:
+            below_pct: { type: number, minimum: 0, maximum: 100 }
+            min_current_a: { type: number, minimum: 6, default: 6 }
+            minutes: { type: integer, minimum: 1, default: 20 }
+        topology: { type: string, enum: [inline, integrated], default: inline, description: 'Kept and validated; no handler yet' }
+        v2g: { type: object, description: 'Reserved (ISO 15118-20): hw, enabled, max_discharge_kw' }
+        flex: { description: 'Reserved: participation in flexibility' }
+    RegistryDigest:
+      type: object
+      required: [v, bound, max_binding_ver, at]
+      properties:
+        v: { type: integer, const: 1 }
+        bound: { type: integer, description: Devices bound to this deployment }
+        max_binding_ver: { type: integer, format: int64 }
+        at: { type: string, format: date-time }

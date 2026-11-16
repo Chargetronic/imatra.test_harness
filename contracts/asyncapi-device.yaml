@@ -1,0 +1,547 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the project. See NOTICE.
+
+asyncapi: 3.0.0
+info:
+  title: Device protocol
+  version: 1.0.0
+  description: |
+    The MQTT protocol between a device (an adapter between a charging station
+    and an EV, or a module inside a station) and the server of one deployment.
+
+    The device is a thin proxy: it tunnels the EV's V2G messages (EXI, not
+    decoded on the device), answers the Charging Loop from a cache pair the
+    server gives it, drives the CP line and reports metering. All ISO 15118-2 /
+    DIN 70121 logic runs in the server's engine.
+
+    This document is the contract; the Go types it describes are in
+    `engine/internal/tunnel` (protocol version `v` = 1). Data-flow diagrams:
+    `docs/architecture/dataflow-device.md`.
+
+    Conventions:
+    - Payloads are JSON, UTF-8. Binary data (EXI, cache pairs) is base64.
+    - `t_*` fields are microseconds since the Unix epoch. Event time is the
+      server's arrival time (ADR-003); device clocks are diagnostics only.
+    - What belongs to what is told by ids from the device: `plug`
+      (`<boot>-<n>`), `conn` (one TCP connection EV ↔ device), `seq`.
+    - Unknown fields are ignored by both sides: the protocol grows by adding
+      fields.
+    - Operations are written from the **server's** side: `receive` = the
+      device publishes, `send` = the server publishes.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  tags:
+    - name: v2g
+      description: V2G tunnel and the Charging Loop cache
+    - name: control
+      description: Commands and settings from the server
+    - name: state
+      description: Device state reports
+
+defaultContentType: application/json
+
+servers:
+  devices:
+    host: '{broker}:8883'
+    protocol: mqtts
+    protocolVersion: 3.1.1
+    description: |
+      Device listener of the deployment's broker (Mosquitto 2; MQTT 3.1.1 and 5
+      accepted, the engine and the reference device use 3.1.1), published on the
+      host (`PUBLIC_TCP_PORT`, default 8883). TLS 1.2, client certificate
+      required: the deployment's CA (`PKI_MODE=own`) or the cloud root issued by
+      the service layer (`PKI_MODE=layer`). The certificate's CN is the MQTT
+      user name and the device id; ACL: a device may read and write
+      `dev/<own id>/#` only. CN `layer` may write `registry/#` only
+      (see docs/registry.md). No passwords on this port.
+    variables:
+      broker:
+        description: DNS name of the broker (`BROKER_DNS`)
+    security:
+      - $ref: '#/components/securitySchemes/deviceCertificate'
+  services:
+    host: 'mqtt:1883'
+    protocol: mqtt
+    protocolVersion: 3.1.1
+    description: |
+      The deployment's own services (engine instances) on the compose network
+      only, never published. Password account `server`. Engines subscribe
+      through the shared subscription `$share/engine/dev/+/…`
+      (`MQTT_SHARE_GROUP`); the broker hands each message to one instance.
+    security:
+      - $ref: '#/components/securitySchemes/serviceAccount'
+
+channels:
+  v2gUp:
+    address: dev/{deviceId}/v2g/up
+    description: One EV request as received by the device, or a connection event (`open`, `closed`).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      v2gUp: { $ref: '#/components/messages/v2gUp' }
+  v2gDown:
+    address: dev/{deviceId}/v2g/down
+    description: The engine's response to one request; may carry a new Charging Loop pair.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      v2gDown: { $ref: '#/components/messages/v2gDown' }
+  trace:
+    address: dev/{deviceId}/trace
+    description: Timing of a delivered response (diagnostics, only with `trace` on).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      trace: { $ref: '#/components/messages/trace' }
+  clPush:
+    address: dev/{deviceId}/cl/push
+    description: A Charging Loop pair without an EV request (limit change between loop requests, device reconnect).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      clPush: { $ref: '#/components/messages/clPush' }
+  ctrl:
+    address: dev/{deviceId}/ctrl
+    description: Commands without a payload of their own; today only `ttl_renew`.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      ctrl: { $ref: '#/components/messages/ctrl' }
+  config:
+    address: dev/{deviceId}/config
+    description: The device's settings, retained, versioned.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      config: { $ref: '#/components/messages/config' }
+  status:
+    address: dev/{deviceId}/status
+    description: Heartbeat, retained; the device's Last Will is `{"online":false}` on the same topic.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      status: { $ref: '#/components/messages/status' }
+  cp:
+    address: dev/{deviceId}/cp
+    description: CP line state, retained, on every change (plug-in, unplug, EV state, mode, mask).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      cp: { $ref: '#/components/messages/cp' }
+  cpSet:
+    address: dev/{deviceId}/cp/set
+    description: CP command — a mode (digital / transit) or a restart pulse.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      cpSet: { $ref: '#/components/messages/cpSet' }
+  powerSet:
+    address: dev/{deviceId}/power/set
+    description: Current limit in basic mode (no HLC) — the device masks the station PWM.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      powerSet: { $ref: '#/components/messages/powerSet' }
+  telemetryEnergy:
+    address: dev/{deviceId}/telemetry/energy
+    description: Phase currents, power and energy at the nominal voltage, while current flows.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      telemetryEnergy: { $ref: '#/components/messages/telemetryEnergy' }
+  cmdAck:
+    address: dev/{deviceId}/cmd/ack
+    description: The device took a command over (a cache pair or `power/set`).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      cmdAck: { $ref: '#/components/messages/cmdAck' }
+
+operations:
+  receiveV2gUp:
+    action: receive
+    channel: { $ref: '#/channels/v2gUp' }
+    summary: EV request → engine (session setup, end of session, cache misses, loop samples)
+    description: |
+      The engine steps the ISO 15118-2 / DIN 70121 state machine and answers on
+      `v2g/down`. A `sampled` request was already answered by the device from
+      its cache; it is journalled, not answered (at most once per
+      `loop_sample_s`).
+    tags: [{ name: v2g }]
+    bindings:
+      mqtt: { qos: 0, retain: false }
+  sendV2gDown:
+    action: send
+    channel: { $ref: '#/channels/v2gDown' }
+    summary: Engine response → device → EV
+    tags: [{ name: v2g }]
+    bindings:
+      mqtt: { qos: 0, retain: false }
+  receiveTrace:
+    action: receive
+    channel: { $ref: '#/channels/trace' }
+    tags: [{ name: v2g }]
+    bindings:
+      mqtt: { qos: 0, retain: false }
+  sendClPush:
+    action: send
+    channel: { $ref: '#/channels/clPush' }
+    tags: [{ name: v2g }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  sendCtrl:
+    action: send
+    channel: { $ref: '#/channels/ctrl' }
+    summary: TTL renewal of the cache pair and limits, every `DEVICE_TTL_RENEW_S` (300 s) by the leader
+    tags: [{ name: control }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  sendConfig:
+    action: send
+    channel: { $ref: '#/channels/config' }
+    summary: Settings at (re)connect and on change (`PUT /v1/devices/{id}/config`)
+    tags: [{ name: control }]
+    bindings:
+      mqtt: { qos: 1, retain: true }
+  receiveStatus:
+    action: receive
+    channel: { $ref: '#/channels/status' }
+    summary: Heartbeat every `heartbeat_s`, at connect (event connect), LWT from the broker
+    description: |
+      At `connect` the engine sends the settings and the current cache pair
+      again. A `battery_pct` below the device's `supply` rule opens a charging
+      window for the device's own battery (`cp/set` restart via X1).
+    tags: [{ name: state }]
+    bindings:
+      mqtt: { qos: 1, retain: true }
+  receiveCp:
+    action: receive
+    channel: { $ref: '#/channels/cp' }
+    summary: Plug-in / unplug, EV state, PWM mode; confirms a basic-mode limit
+    tags: [{ name: state }]
+    bindings:
+      mqtt: { qos: 1, retain: true }
+  sendCpSet:
+    action: send
+    channel: { $ref: '#/channels/cpSet' }
+    summary: Digital ↔ transit, final SoC read (DIN), supply window
+    tags: [{ name: control }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  sendPowerSet:
+    action: send
+    channel: { $ref: '#/channels/powerSet' }
+    summary: Operator limit in basic mode (from `/v1` limits and activations)
+    tags: [{ name: control }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  receiveTelemetryEnergy:
+    action: receive
+    channel: { $ref: '#/channels/telemetryEnergy' }
+    summary: Every `telemetry_s` (60 s) while current flows, at once on a change ≥ 1 A
+    tags: [{ name: state }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  receiveCmdAck:
+    action: receive
+    channel: { $ref: '#/channels/cmdAck' }
+    summary: Confirmation of a pair or a power limit → `limit.applied` in the feed
+    description: Handled apart from the per-device workers. The first `installed` / `applied` per `command_id` counts; repeats and reordered acks change nothing (ADR-001, rule 4).
+    tags: [{ name: control }]
+    bindings:
+      mqtt: { qos: 1, retain: false }
+
+components:
+  securitySchemes:
+    deviceCertificate:
+      type: X509
+      description: Client certificate, CN = device id (or `layer` for the service layer). Issued by the deployment's CA or by the service layer (7 days, renewed daily).
+    serviceAccount:
+      type: userPassword
+      description: Account `server`, password from `.env` (`MQTT_SERVER_PASSWORD`).
+
+  parameters:
+    deviceId:
+      description: Device id = CN of the device's certificate.
+      examples: ['dev-01']
+
+  messages:
+    v2gUp:
+      name: Up
+      title: V2G request or connection event
+      payload: { $ref: '#/components/schemas/Up' }
+      examples:
+        - name: request
+          payload: { v: 1, conn: 'c7', seq: 3, pt: 32769, exi: 'gJgCAA==', wire_bytes: 12, t_ev_rx: 1763214000000000, t_up_tx: 1763214000000150, plug: '9f2c01ab-4' }
+        - name: open
+          payload: { v: 1, conn: 'c7', event: open, tls: 'TLSv1.2 ECDHE-ECDSA-AES128-SHA256', t_ev_rx: 1763214000000000, t_up_tx: 1763214000000100, plug: '9f2c01ab-4' }
+    v2gDown:
+      name: Down
+      title: Engine response
+      payload: { $ref: '#/components/schemas/Down' }
+    trace:
+      name: Trace
+      payload: { $ref: '#/components/schemas/Trace' }
+    clPush:
+      name: Push
+      title: Cache pair without a request
+      payload: { $ref: '#/components/schemas/Push' }
+    ctrl:
+      name: Ctrl
+      payload: { $ref: '#/components/schemas/Ctrl' }
+    config:
+      name: Config
+      payload: { $ref: '#/components/schemas/Config' }
+    status:
+      name: Status
+      payload: { $ref: '#/components/schemas/Status' }
+      examples:
+        - name: heartbeat
+          payload: { online: true, event: connect, sw: '0.3.2', platform: 'virtual', ev_connected: true, loop_active: true, config_ver: 7, config_rev: 2, t: 1763214000000000 }
+        - name: lastWill
+          payload: { online: false }
+    cp:
+      name: CPState
+      payload: { $ref: '#/components/schemas/CPState' }
+      examples:
+        - name: pluggedDigital
+          payload: { mode: digital, out: mask, duty: 5, ev: B, event: plugged, plug: '9f2c01ab-4', station: { duty: 53.3 }, t: 1763214000000000 }
+    cpSet:
+      name: CPSet
+      payload: { $ref: '#/components/schemas/CPSet' }
+      examples:
+        - name: mode
+          payload: { v: 1, mode: transit }
+        - name: restart
+          payload: { v: 1, cmd: restart, via: X1, hold_s: 3 }
+    powerSet:
+      name: PowerSet
+      payload: { $ref: '#/components/schemas/PowerSet' }
+    telemetryEnergy:
+      name: Telemetry
+      payload: { $ref: '#/components/schemas/Telemetry' }
+    cmdAck:
+      name: Ack
+      payload: { $ref: '#/components/schemas/Ack' }
+
+  schemas:
+    ProtocolVersion:
+      type: integer
+      const: 1
+      description: Protocol version (`tunnel.Version`).
+    Micros:
+      type: integer
+      format: int64
+      description: Microseconds since the Unix epoch.
+    Base64:
+      type: string
+      contentEncoding: base64
+    ConnId:
+      type: string
+      description: TCP connection EV ↔ device, unique per device.
+    PlugId:
+      type: string
+      pattern: '^[^-]+-[0-9]+$'
+      description: 'Plug-in id `<boot>-<n>`: boot id of the device software start, plug-in number since then (ADR-003). Absent without an EV and from devices before 0.3.2.'
+    CachePair:
+      type: object
+      description: |
+        The EV's ChargingStatusReq bytes, the response to give for them, and
+        the local termination scenario. A newer `ver` replaces an older one;
+        `ttl_s` also renews the TTL.
+      required: [ver, req, res, ttl_s]
+      properties:
+        ver: { type: integer, format: int64, description: 'Pair version, monotonic per device' }
+        req: { $ref: '#/components/schemas/Base64', description: 'ChargingStatusReq EXI, compared byte for byte' }
+        res: { $ref: '#/components/schemas/Base64', description: 'ChargingStatusRes EXI to answer with' }
+        term:
+          type: array
+          description: 'Termination scenario: ChargingStatusRes with StopCharging, then PowerDeliveryRes, SessionStopRes for the next misses.'
+          items: { $ref: '#/components/schemas/Base64' }
+        ttl_s: { type: integer, description: 'Validity without word from the server, s' }
+        command_id: { type: integer, format: int64, description: 'Operator command carried by this pair (its limit); echoed in the ack; 0/absent = station settings only' }
+
+    Up:
+      type: object
+      required: [v, conn, t_ev_rx, t_up_tx]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        conn: { $ref: '#/components/schemas/ConnId' }
+        seq: { type: integer, minimum: 1, description: 'Per connection, from 1' }
+        pt: { type: integer, description: 'V2GTP payload type; 32769 (0x8001) = EXI' }
+        exi: { $ref: '#/components/schemas/Base64', description: 'Payload without the V2GTP header' }
+        wire_bytes: { type: integer, description: 'Request size as received from the EV (V2GTP header + EXI)' }
+        sampled: { type: boolean, description: 'A cache hit forwarded as a liveness sign; not answered' }
+        event: { type: string, enum: [open, closed], description: 'Connection event instead of a message' }
+        reason: { type: string, description: 'With `closed`: why the device closed the connection (free text)' }
+        tls: { type: string, description: 'With `open`: TLS version and cipher to the EV; empty = plain TCP' }
+        t_ev_rx: { $ref: '#/components/schemas/Micros', description: 'Device received it from the EV' }
+        t_up_tx: { $ref: '#/components/schemas/Micros', description: 'Device published it' }
+        plug: { $ref: '#/components/schemas/PlugId' }
+
+    Down:
+      type: object
+      required: [v, conn, seq, pt, t_srv_rx, t_srv_tx]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        conn: { $ref: '#/components/schemas/ConnId' }
+        seq: { type: integer, description: 'The request''s seq' }
+        pt: { type: integer }
+        exi: { $ref: '#/components/schemas/Base64' }
+        close: { type: boolean, description: 'Close the TCP connection after sending' }
+        cl: { $ref: '#/components/schemas/CachePair', description: 'New pair, installed before the EV''s next loop request' }
+        t_srv_rx: { $ref: '#/components/schemas/Micros' }
+        t_srv_tx: { $ref: '#/components/schemas/Micros' }
+
+    Trace:
+      type: object
+      required: [v, conn, seq, t_down_rx, t_ev_tx]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        conn: { $ref: '#/components/schemas/ConnId' }
+        seq: { type: integer }
+        t_down_rx: { $ref: '#/components/schemas/Micros' }
+        t_ev_tx: { $ref: '#/components/schemas/Micros' }
+        from_cache: { type: boolean, description: 'Answered from the cache; the request went nowhere else' }
+        term: { type: boolean, description: 'Answered from the local termination scenario' }
+        t_ev_rx: { $ref: '#/components/schemas/Micros' }
+        req_bytes: { type: integer }
+        res_bytes: { type: integer }
+        note: { type: string }
+
+    Push:
+      type: object
+      required: [v, conn, cl]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        conn: { $ref: '#/components/schemas/ConnId', description: 'The device drops a pair for another connection' }
+        cl: { $ref: '#/components/schemas/CachePair' }
+
+    Ctrl:
+      type: object
+      required: [v, cmd, t_srv]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        cmd: { type: string, enum: [ttl_renew] }
+        ttl_s: { type: integer, description: 'New TTL from now' }
+        t_srv: { $ref: '#/components/schemas/Micros' }
+
+    Config:
+      type: object
+      description: 'Defaults from `.env` (`DEVICE_*`), per device via `PUT /v1/devices/{id}/config`; field list with labels at `GET /v1/config/fields`.'
+      required: [v, ver, rev]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        ver: { type: integer, format: int64, description: 'Monotonic; the device ignores older ones' }
+        rev: { type: integer, description: 'device_configs version (0 = server defaults); echoed in status as config_rev' }
+        loop_sample_s: { type: integer, minimum: 0, maximum: 600, default: 30, description: 'T: a cache hit goes to the server at most once per T s; 0 = every one' }
+        ttl_s: { type: integer, minimum: 60, maximum: 3600, default: 1200, description: 'Cache and limits hold this long without the server; then local termination (digital) or station PWM (basic)' }
+        heartbeat_s: { type: integer, minimum: 10, maximum: 600, default: 60, description: 'Status period; window of the loop_active flag' }
+        term_backup_s: { type: integer, minimum: 2, maximum: 30, default: 5, description: 'The EV must follow the stop scenario within this; else the connection is dropped and a CP interruption recovers the EV' }
+        trace: { type: boolean, default: true, description: 'Per-frame timing (diagnostics)' }
+        cache_enabled: { type: boolean, default: true, description: 'Off = every loop request goes to the server' }
+        digital_mode: { type: boolean, default: true, description: '5 % to the EV (HLC); off = transit, basic charging on the station PWM' }
+        hlc_wait_s: { type: integer, minimum: 0, maximum: 120, default: 30, description: 'No V2G connection this long after plug-in → basic mode; 0 = wait forever' }
+        telemetry_s: { type: integer, minimum: 1, maximum: 600, default: 60, description: 'Metering period while current flows' }
+        soc_final: { type: boolean, default: true, description: 'Server only (ignored by the device) — final SoC read of a DIN-only EV' }
+        soc_final_wait_s: { type: integer, minimum: 5, maximum: 600, default: 20, description: 'Server only' }
+
+    Status:
+      type: object
+      required: [online]
+      description: Fields the server uses; others are kept as reported.
+      properties:
+        online: { type: boolean, description: 'false = Last Will published by the broker' }
+        event: { type: string, enum: [connect], description: 'First status after (re)connecting' }
+        sw: { type: string, description: 'Device software version' }
+        fw: { type: string }
+        platform: { type: string, description: 'Hardware or virtual platform' }
+        ev_connected: { type: boolean }
+        loop_active: { type: boolean, description: 'Loop requests from the EV arrived within the last heartbeat_s' }
+        config_ver: { type: integer, format: int64, description: 'Applied Config.ver' }
+        config_rev: { type: integer, description: 'Applied Config.rev' }
+        battery_pct: { type: number, minimum: 0, maximum: 100, description: 'The device''s own battery, if it has one (rule supply)' }
+        t: { $ref: '#/components/schemas/Micros', description: 'Device clock, diagnostics only' }
+
+    CPState:
+      type: object
+      required: [mode, out, ev]
+      properties:
+        mode: { type: string, enum: [digital, transit, basic, X1, F, E], description: 'Requested mode' }
+        out: { type: string, enum: [mask, transit, X1, F, E], description: 'Applied to the EV side: mask over the station PWM, transit, or a fixed state' }
+        duty: { type: number, description: 'Mask duty, % (5 = digital; limit_a / 0.6 = basic)' }
+        limit_a: { type: [number, 'null'], description: 'Basic-mode limit in force, A' }
+        ev: { type: string, enum: [A, B, C, D, E], description: 'EV state per IEC 61851-1' }
+        station:
+          type: object
+          description: The station's own PWM as the device sees it
+          properties:
+            duty: { type: number, description: 'Station PWM duty, %' }
+          additionalProperties: true
+        power: { type: [boolean, 'null'], description: 'Line powered' }
+        event: { type: string, enum: [plugged, unplugged] }
+        note: { type: string }
+        slac: { type: string, enum: [UNMATCHED, MATCHING, MATCHED], description: 'The device''s SLAC state (ISO 15118-3)' }
+        ev_mac: { type: string, description: 'EV PLC MAC from SLAC' }
+        plug: { $ref: '#/components/schemas/PlugId' }
+        plugged_ms: { type: [integer, 'null'], description: 'With unplugged: plug-in duration by the device monotonic clock' }
+        t: { $ref: '#/components/schemas/Micros', description: 'Device clock, diagnostics only' }
+
+    CPSet:
+      type: object
+      required: [v]
+      description: 'Either a mode or a restart pulse.'
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        mode: { type: string, enum: [digital, transit] }
+        cmd: { type: string, enum: [restart] }
+        via: { type: string, enum: [X1, F], description: 'Restart pulse state towards the EV' }
+        hold_s: { type: number, description: 'Pulse length, s' }
+      oneOf:
+        - required: [mode]
+        - required: [cmd, via]
+
+    PowerSet:
+      type: object
+      required: [v, ver, limit_a, ttl_s, t_srv]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        ver: { type: integer, format: int64 }
+        command_id: { type: integer, format: int64 }
+        limit_a: { type: number, minimum: 0, description: 'Current limit, A; 0 clears it. Never above the station PWM, never below 6 A (IEC 61851)' }
+        duration_s: { type: integer, description: 'Held this long, even offline' }
+        ttl_s: { type: integer, description: 'Dropped earlier if not renewed' }
+        t_srv: { $ref: '#/components/schemas/Micros' }
+
+    Telemetry:
+      type: object
+      required: [seq, t, i_a, p_total_w, e_wh]
+      properties:
+        seq: { type: integer, format: int64, description: 'Per boot; the newest report wins (ADR-003)' }
+        boot: { type: string, description: 'Boot id; absent before 0.3.2' }
+        plug: { $ref: '#/components/schemas/PlugId' }
+        t: { $ref: '#/components/schemas/Micros', description: 'Device clock, diagnostics only' }
+        i_a: { type: array, items: { type: number }, maxItems: 3, description: 'Phase currents L1..L3, A (clamps)' }
+        p_total_w: { type: number, description: 'Power at the nominal voltage, W' }
+        e_wh: { type: number, description: 'Energy counter, Wh (informational, not for billing)' }
+
+    Ack:
+      type: object
+      required: [v, kind, ver, result, t]
+      properties:
+        v: { $ref: '#/components/schemas/ProtocolVersion' }
+        kind: { type: string, enum: [pair, power] }
+        ver: { type: integer, format: int64, description: 'Version of the pair or power/set' }
+        command_id: { type: integer, format: int64 }
+        conn: { $ref: '#/components/schemas/ConnId' }
+        result:
+          type: string
+          enum: [installed, stale, rejected, applied, held, cleared]
+          description: |
+            pair: installed (the EV gets it on its next loop request), stale
+            (older than the one held), rejected (a local termination runs).
+            power: applied (CP on the station PWM side, mask set), held (kept
+            until the CP gets there: a digital session runs), cleared, stale.
+        plug: { $ref: '#/components/schemas/PlugId' }
+        t: { $ref: '#/components/schemas/Micros', description: 'Device clock, diagnostics only' }
