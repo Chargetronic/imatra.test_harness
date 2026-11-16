@@ -11,7 +11,7 @@ jobs:
   repository:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Repository check (keys, certificates, deny-list)
@@ -25,11 +25,40 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - run: pip install -r conformance/requirements.txt
       - name: Checker against the pinned contracts
         working-directory: conformance
         run: python -m pytest -q tests
+
+  layer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: layer/go.mod
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install -r conformance/requirements.txt
+      - name: Answers for every outcome against the contracts
+        working-directory: layer
+        run: |
+          CONTRACT_OUT=$RUNNER_TEMP/answers.jsonl go test ./...
+          cat $RUNNER_TEMP/answers.jsonl $RUNNER_TEMP/answers.jsonl.registry > $RUNNER_TEMP/all.jsonl
+          cd ../conformance && python -m conformance batch $RUNNER_TEMP/all.jsonl
+      - name: Smoke test of the running layer (Mosquitto, mTLS)
+        run: |
+          set -e
+          dc="docker compose -f compose/layer.yml"
+          $dc up -d --build
+          $dc run --rm -T layer layer provision dev-01 > compose/smoke/dev-01.json
+          $dc run --rm -T layer layer bind dev-01
+          $dc --profile smoke run --rm smoke
+      - name: Logs
+        if: failure()
+        run: docker compose -f compose/layer.yml logs

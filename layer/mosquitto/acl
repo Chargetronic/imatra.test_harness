@@ -1,0 +1,13 @@
+# The layer service answers certificate and signature requests.
+user svc-layer
+topic read dev/+/cred/req
+topic read dev/+/sign/req
+topic write dev/+/cred/res
+topic write dev/+/sign/res
+
+# A device: only its own requests and answers (spec/asyncapi-layer.yaml).
+pattern write dev/%u/cred/req
+pattern write dev/%u/cred/moved
+pattern write dev/%u/sign/req
+pattern read dev/%u/cred/res
+pattern read dev/%u/sign/res
