@@ -5,6 +5,9 @@
 # contracts. Exit 1 on the first failed check or on any contract problem.
 #   compose/scenarios.sh t2        operator commands during a session: current
 #                                  limit, group activation, session summary
+#   compose/scenarios.sh t3        the test layer stops during a session and comes
+#                                  back: the session, the station's link to
+#                                  Imatra, a registry change made meanwhile
 # Settings: IMATRA_DIR (Imatra checkout, as for up.sh), API (default
 # https://localhost/v1), DEVICE_ID (dev-01), T_WAIT (seconds per wait, 180).
 set -euo pipefail
@@ -116,7 +119,56 @@ t2() {
   log "T2 passed"
 }
 
+H="docker compose -f compose/harness.yml"
+layer_rules() { $H run --rm --no-deps -T layer layer rules "$DEV" "$1" >/dev/null; }
+
+t3() {
+  log "T3: the test layer stops during a session ($DEV)"
+  start_watch
+  wait_for "device online and in a session" "$API/devices/$DEV" '.online == true and .session != null'
+  local started; started=$(jq -r '.session.started_at' <<<"$LAST")
+  local ver0; ver0=$(jq -r '.registry.binding_ver' <<<"$LAST")
+
+  # 1. the layer goes away while the session runs
+  $H stop layer layer-mqtt >/dev/null 2>&1
+  local down; down=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  log "test layer stopped (service and broker)"
+
+  # 2. the running session ends normally: the layer was needed for its TLS handshake only
+  wait_for "the session started before the stop ended normally" "$API/sessions?device=$DEV&from=$started&open=false" \
+    "[.sessions[] | select(.started_at <= \"$down\" and .end_reason == \"ev_unplugged\")] | length > 0"
+
+  # 3. while the layer is away: the station stays connected to Imatra; a registry change is queued
+  layer_rules '{"topology":"integrated","rated_current_a":20}'
+  log "registry change queued while the layer is away: rated_current_a 20 A"
+  sleep 60
+  api "$API/devices/$DEV" >/tmp/t3-dev.json || fail "GET device"
+  jq -e '.online == true' /tmp/t3-dev.json >/dev/null || fail "the station went offline at Imatra while the layer was away"
+  jq -e '.registry.rules.rated_current_a == null' /tmp/t3-dev.json >/dev/null \
+    || fail "the registry change reached Imatra although the layer was stopped"
+  log "ok: after 60 s without the layer the station is online at Imatra; the change has not arrived"
+  # what plug-ins did without the signer: recorded, not judged (EV enforces TLS)
+  log "plug-ins without the layer: $(api "$API/sessions?device=$DEV&from=$down" | \
+    jq -c "[.sessions[] | select(.started_at > \"$down\") | {mode, end_reason, v2g_sessions, duration_s}]")"
+
+  # 4. the layer comes back: the queued change arrives, TLS sessions go on
+  $H start layer-mqtt layer >/dev/null 2>&1
+  local up; up=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  log "test layer started again"
+  wait_for "the registry change arrived after the layer came back" "$API/devices/$DEV" \
+    ".registry.rules.rated_current_a == 20 and .station_max_a == 20 and .registry.binding_ver > $ver0"
+  wait_for "a TLS session after the layer came back" "$API/sessions?device=$DEV&from=$up&open=false" \
+    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
+
+  # 5. back to the start
+  layer_rules '{"topology":"integrated"}'
+  wait_for "registry restored" "$API/devices/$DEV" '.registry.rules.rated_current_a == null and .station_max_a == 32'
+  stop_watch
+  log "T3 passed"
+}
+
 case "${1:-}" in
   t2) t2 ;;
-  *) sed -n '2,10p' "$0"; exit 2 ;;
+  t3) t3 ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
 esac

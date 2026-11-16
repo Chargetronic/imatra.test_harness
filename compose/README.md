@@ -16,4 +16,4 @@ the contracts.
 | Name | What it checks |
 |---|---|
 | `t2` | during a session: a current limit is applied and confirmed by the station; limits below 6 A, above the station limit, without a duration or without a key are refused; cancelling; a group activation over the station is dispatched, confirmed, idempotent by its id and ended; the session summary counts the limits |
-
+| `t3` | the test layer (service and broker) stops during a session: the session ends normally, the station stays connected to Imatra, a registry change made meanwhile does not arrive; plug-ins without the signer are recorded; when the layer is back the change arrives (new `binding_ver`, station limit 20 A) and TLS sessions go on |
