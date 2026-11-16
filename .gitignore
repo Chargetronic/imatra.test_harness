@@ -1,0 +1,20 @@
+# Trust roots, keys and certificates are generated on first start and never committed.
+/pki/
+**/pki/
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# Local settings
+.env
+*.env.local
+
+# Build and runtime output
+/bin/
+/results/
+*.log
+__pycache__/
+.venv/

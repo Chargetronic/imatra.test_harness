@@ -1,0 +1,12 @@
+Imatra Test Harness
+Copyright (c) 2026 Salute Solutions Oy (Chargetronic)
+
+The licence for this repository has not been chosen yet. Until it is, no
+licence is granted: all rights are reserved.
+
+The intended licence permits use, modification and redistribution only for
+developing and testing software that works with the Imatra server. Production
+use is not intended.
+
+Third-party components used by this harness are distributed under their own
+licences.
