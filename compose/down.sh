@@ -7,3 +7,4 @@ IMATRA_DIR=${IMATRA_DIR:-$PWD/../imatra.iso15118_server}
 docker compose -f compose/harness.yml --profile e2e down "$@" || true
 docker compose -p imatra-harness-server -f "$IMATRA_DIR/docker-compose.yml" -f "$PWD/compose/imatra.override.yml" \
   --project-directory "$IMATRA_DIR" down "$@" || true
+docker network rm imatra-harness-link >/dev/null 2>&1 || true

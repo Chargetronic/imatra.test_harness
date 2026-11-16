@@ -17,7 +17,8 @@ fi
 git -C "$IMATRA_DIR" fetch -q --depth 1 origin "$REF" && git -C "$IMATRA_DIR" checkout -q FETCH_HEAD
 echo "Imatra at $(git -C "$IMATRA_DIR" rev-parse --short HEAD)"
 
-# 1. the test layer's trust roots and broker (also creates the link network)
+# 1. the link network (harness ↔ Imatra broker), the test layer's trust roots and broker
+docker network inspect imatra-harness-link >/dev/null 2>&1 || docker network create imatra-harness-link >/dev/null
 $H up -d --build layer-mqtt
 
 # 2. the files the deployment imports from the layer

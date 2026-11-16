@@ -79,4 +79,5 @@ networks:
   # the harness ↔ the Imatra broker (joined by Imatra's mqtt service through
   # compose/imatra.override.yml)
   link:
-    name: imatra-harness-link
+    external: true
+    name: imatra-harness-link  # created by compose/up.sh
