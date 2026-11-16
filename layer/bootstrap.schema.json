@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bootstrap package of a test station",
+  "description": "Issued by 'layer provision ID' of the test layer; replaces the factory step and the first start of a real device. Harness only: production devices have no such package.",
+  "type": "object",
+  "required": ["v", "device_id", "layer", "cert", "key", "secc"],
+  "properties": {
+    "v": { "const": 1 },
+    "device_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,62}$" },
+    "layer": {
+      "type": "object",
+      "required": ["address", "ca"],
+      "properties": {
+        "address": { "type": "string", "description": "host:port of the test layer's broker" },
+        "ca": { "type": "string", "description": "PEM root of the test layer, pinned by the station" }
+      }
+    },
+    "cert": { "type": "string", "description": "PEM device certificate under the test layer CA, OU bench" },
+    "key": { "type": "string", "description": "PEM software key of the device (a real device keeps it in its secure element)" },
+    "secc": {
+      "type": "object",
+      "required": ["chain"],
+      "properties": { "chain": { "type": "string", "description": "PEM SECC certificate under the test V2G root, shown to the EV; its key stays in the test layer" } }
+    }
+  }
+}

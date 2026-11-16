@@ -1,0 +1,46 @@
+# The test layer alone, on an internal network (no published port, TK-7).
+#   docker compose -f compose/layer.yml up -d --build
+#   docker compose -f compose/layer.yml run --rm layer layer provision dev-01 > dev-01.json
+#   docker compose -f compose/layer.yml run --rm layer layer bind dev-01
+#   docker compose -f compose/layer.yml --profile smoke run --rm smoke
+name: imatra-harness-layer
+
+services:
+  layer-init:
+    build: ../layer
+    command: ["layer", "init"]
+    volumes: [layer-data:/data]
+  layer-mqtt:
+    image: eclipse-mosquitto:2
+    depends_on:
+      layer-init: { condition: service_completed_successfully }
+    volumes:
+      - layer-data:/data:ro
+      - ../layer/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ../layer/mosquitto/acl:/mosquitto/config/acl:ro
+    networks: [harness]
+  layer:
+    build: ../layer
+    depends_on:
+      layer-init: { condition: service_completed_successfully }
+      layer-mqtt: { condition: service_started }
+    volumes: [layer-data:/data]
+    networks: [harness]
+  smoke:
+    profiles: [smoke]
+    image: python:3.12-alpine
+    working_dir: /harness
+    command: ["sh", "-c", "pip install -q -r conformance/requirements.txt cryptography && python compose/smoke/layer_smoke.py"]
+    environment:
+      BOOTSTRAP: /harness/compose/smoke/dev-01.json
+    volumes:
+      - ..:/harness:ro
+    networks: [harness, default]  # default: to install the checker's packages
+
+volumes:
+  layer-data:
+
+networks:
+  harness:
+    internal: true
+  default:

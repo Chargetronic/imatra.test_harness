@@ -1,6 +1,6 @@
 # Trust roots, keys and certificates are generated on first start and never committed.
 /pki/
-**/pki/
+/data/
 *.key
 *.pem
 *.crt
@@ -18,3 +18,6 @@
 *.log
 __pycache__/
 .venv/
+
+# Bootstrap packages carry a device key
+compose/smoke/*.json
