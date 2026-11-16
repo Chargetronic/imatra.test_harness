@@ -6,6 +6,9 @@
 //	layer unbind ID | revoke ID         immediate
 //	layer type ID TYPE | rules ID JSON  registry fields
 //	layer list                          devices and deployments
+//	layer fleet OP PREFIX FROM TO [DEP] many devices at once, ids PREFIX%05d (as fleetgen):
+//	                                    add (register and bind), bind, unbind, revoke;
+//	                                    one write of the registry (load tests)
 //	layer serve                         answer cred/sign requests, publish the registry
 //
 // Settings (environment): LAYER_DIR (/data), LAYER_BROKER (layer-mqtt:8883),
@@ -24,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,6 +116,13 @@ func main() {
 		})
 	case "list":
 		err = list()
+	case "fleet":
+		need(4)
+		dep := deployment
+		if len(a) > 4 {
+			dep = a[4]
+		}
+		err = fleet(a[0], a[1], a[2], a[3], dep)
 	case "serve":
 		err = serve()
 	default:
@@ -124,7 +135,7 @@ func main() {
 
 func usage() {
 	log.Fatal(`usage: layer init | provision ID | bind ID [DEPLOYMENT] | unbind ID | revoke ID |
-       type ID TYPE | rules ID JSON | list | serve`)
+       type ID TYPE | rules ID JSON | list | fleet OP PREFIX FROM TO [DEPLOYMENT] | serve`)
 }
 
 // --- trust roots
@@ -321,6 +332,71 @@ func bind(id, dep string) error {
 		s.Queue(dep, id, "bound", now)
 		return nil
 	})
+}
+
+// fleet: many devices in one write of the registry (load tests). Devices added
+// here have no pinned key: their certificates come from the deployment's root
+// (fleetgen -client-ca), not from cred requests.
+func fleet(op, prefix, from, to, dep string) error {
+	a, err1 := strconv.Atoi(from)
+	b, err2 := strconv.Atoi(to)
+	if err1 != nil || err2 != nil || a < 0 || b < a {
+		return errors.New("fleet: FROM and TO are numbers, FROM <= TO")
+	}
+	n := 0
+	err := st.Update(func(s *store.State) error {
+		if s.Deployments[dep] == nil {
+			return fmt.Errorf("no deployment %s", dep)
+		}
+		now := time.Now()
+		for i := a; i <= b; i++ {
+			id := fmt.Sprintf("%s%05d", prefix, i)
+			d := s.Devices[id]
+			switch op {
+			case "add":
+				if d == nil {
+					d = &store.Device{Status: "active", Type: "adapter"}
+					s.Devices[id] = d
+				}
+				fallthrough
+			case "bind":
+				if d == nil || d.Status != "active" {
+					continue
+				}
+				if d.Deployment != "" && d.Deployment != dep {
+					d.BindingVer++
+					s.Queue(d.Deployment, id, "unbound", now)
+				}
+				d.Deployment = dep
+				d.BindingVer++
+				s.Queue(dep, id, "bound", now)
+			case "unbind":
+				if d == nil || d.Deployment == "" {
+					continue
+				}
+				d.BindingVer++
+				s.Queue(d.Deployment, id, "unbound", now)
+				d.Deployment = ""
+			case "revoke":
+				if d == nil || d.Status != "active" {
+					continue
+				}
+				d.Status = "revoked"
+				d.BindingVer++
+				if d.Deployment != "" {
+					s.Queue(d.Deployment, id, "revoked", now)
+				}
+			default:
+				return errors.New("fleet: OP is add, bind, unbind or revoke")
+			}
+			n++
+		}
+		return nil
+	})
+	if err == nil {
+		log.Printf("fleet %s: %d devices %s%05d..%s%05d", op, n, prefix, a, prefix, b)
+	}
+	return err
 }
 
 func list() error {
