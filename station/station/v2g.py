@@ -151,8 +151,18 @@ def tls_settings():
     return s
 
 
+def _ignore_sni():
+    """EVs send their IPv6 address (e.g. fe80::…%eth0) as SNI; ISO 15118-2 does
+    not use SNI, so it is ignored instead of refused as an invalid host name."""
+    import tlslite.tlsconnection as tc
+
+    tc.is_valid_hostname = lambda _name: True
+
+
 def tls_wrap(sock: socket.socket, secc_pem: str, sign: Callable[[bytes], bytes]):
     from tlslite import TLSConnection, X509CertChain
+
+    _ignore_sni()
 
     chain = X509CertChain()
     chain.parsePemList(secc_pem)
