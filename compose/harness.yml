@@ -41,6 +41,19 @@ services:
       harness: {}
       link: {}
       v2g: { ipv6_address: "fd15:118::10" }
+  # profile own: the station with a certificate of the deployment's own CA
+  # (PKI_MODE=own, no layer); files from OWN_DIR (compose/scenarios.sh t5)
+  station-own:
+    profiles: [own]
+    build: ../station
+    restart: unless-stopped
+    command: ["--device-id", "dev-01", "--cert", "/own/dev-01.pem", "--key", "/own/dev-01.pem",
+              "--ca", "/own/ca.crt", "--address", "mqtt:8883", "--v2g-subnet", "fd15:118::/64",
+              "--replug-s", "${REPLUG_S:-30}"]
+    volumes: ["${OWN_DIR:-/tmp/own}:/own:ro"]
+    networks:
+      link: {}
+      v2g: { ipv6_address: "fd15:118::10" }
   ev:
     build: ../ev
     restart: unless-stopped

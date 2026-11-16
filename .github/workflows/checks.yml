@@ -108,6 +108,12 @@ jobs:
       - name: "Scenario T6: an EV without TLS"
         if: env.HAS_TOKEN == 'true'
         run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t6
+      - name: "Scenario T4: the registry"
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t4
+      - name: "Scenario T5: PKI_MODE=own (last: replaces the deployment)"
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t5
       - name: Logs
         if: failure() && env.HAS_TOKEN == 'true'
         run: |

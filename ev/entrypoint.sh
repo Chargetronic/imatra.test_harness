@@ -3,9 +3,11 @@
 # one charging session after another.
 set -e
 ROOT=${V2G_ROOT:-/layer-data/pki/v2g-root.crt}
-until [ -f "$ROOT" ]; do echo "waiting for $ROOT"; sleep 2; done
 mkdir -p /ev/pki/iso15118_2/certs
-cp "$ROOT" /ev/pki/iso15118_2/certs/v2gRootCACert.pem
+if [ "${EV_TLS:-1}" != 0 ]; then
+  until [ -f "$ROOT" ]; do echo "waiting for $ROOT"; sleep 2; done
+  cp "$ROOT" /ev/pki/iso15118_2/certs/v2gRootCACert.pem
+fi
 # EV_TLS=0: an EV without TLS (asks for TCP in SDP, does not insist on TLS),
 # as many EVs with ISO 15118-2 EIM are
 if [ "${EV_TLS:-1}" = 0 ]; then
