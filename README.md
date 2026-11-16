@@ -1,7 +1,7 @@
 # Imatra Test Harness
 
 A self-contained test environment for developing and debugging against the
-[Imatra](https://github.com/Chargetronic/Imatra) ISO 15118 server without any
+[Imatra](https://github.com/Chargetronic/imatra.iso15118_server) ISO 15118 server without any
 production infrastructure.
 
 It provides the three counterparts an Imatra deployment talks to:

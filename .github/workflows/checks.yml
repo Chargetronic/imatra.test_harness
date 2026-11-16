@@ -19,5 +19,5 @@ jobs:
           FORBIDDEN_PATTERNS: ${{ secrets.FORBIDDEN_PATTERNS }}
           # Required on this repository; forks and pull requests from forks
           # have no access to the secret and run the key check only.
-          REQUIRE_DENYLIST: ${{ github.repository == 'Chargetronic/Imatra.Test_Harness' && github.event_name == 'push' && '1' || '0' }}
+          REQUIRE_DENYLIST: ${{ github.repository == 'Chargetronic/imatra.test_harness' && github.event_name == 'push' && '1' || '0' }}
         run: bash scripts/check-repo.sh --history
