@@ -3,6 +3,10 @@
 Waits until one full charging session of the test station has gone through
 and checks every message on dev/# and registry/# against the contracts.
 Exit 0 when every step was seen and no message broke a contract.
+
+REQUIRE_STEPS=0 (used by compose/scenarios.sh): no steps required; watches for
+WATCH_S seconds, or until the file STOP_FILE appears, and fails only on a
+message that broke a contract.
 """
 
 import json
@@ -18,6 +22,8 @@ from conformance import load  # noqa: E402
 
 DEV = os.environ.get("DEVICE_ID", "dev-01")
 WATCH_S = float(os.environ.get("WATCH_S", "240"))
+REQUIRE_STEPS = os.environ.get("REQUIRE_STEPS", "1") != "0"
+STOP_FILE = os.environ.get("STOP_FILE", "")
 contracts = load()
 problems: list[str] = []
 counts: dict[str, int] = {}
@@ -52,7 +58,7 @@ def on_message(_c, _u, m):
         if name not in seen and isinstance(body, dict) and match(m.topic, body):
             seen[name] = time.monotonic() - t0
             print(f"{seen[name]:6.1f} s  {name}", flush=True)
-    if len(seen) == len(STEPS):
+    if REQUIRE_STEPS and len(seen) == len(STEPS):
         done.set()
 
 
@@ -67,10 +73,14 @@ for _ in range(60):
     except OSError:
         time.sleep(2)
 c.loop_start()
-done.wait(WATCH_S)
+end = time.monotonic() + WATCH_S
+while not done.is_set() and time.monotonic() < end:
+    if STOP_FILE and os.path.exists(STOP_FILE):
+        break
+    done.wait(1)
 c.loop_stop()
 
-missing = [s for s in STEPS if s not in seen]
+missing = [s for s in STEPS if s not in seen] if REQUIRE_STEPS else []
 print("messages per topic:", json.dumps(counts, indent=1, sort_keys=True))
 for s in missing:
     print("MISSING", s)
