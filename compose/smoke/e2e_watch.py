@@ -25,7 +25,7 @@ done = threading.Event()
 
 STEPS = {
     "registry: bound": lambda t, m: t == f"registry/dev/{DEV}" and m.get("state") == "bound",
-    "status: connect": lambda t, m: t == f"dev/{DEV}/status" and m.get("event") == "connect",
+    "status: online": lambda t, m: t == f"dev/{DEV}/status" and m.get("online") is True,
     "cp: plugged": lambda t, m: t == f"dev/{DEV}/cp" and m.get("event") == "plugged",
     "v2g: open over TLS 1.2": lambda t, m: t == f"dev/{DEV}/v2g/up" and m.get("event") == "open"
     and str(m.get("tls", "")).startswith("TLSv1.2"),
