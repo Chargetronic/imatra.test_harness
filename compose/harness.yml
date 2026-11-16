@@ -45,6 +45,8 @@ services:
     build: ../ev
     restart: unless-stopped
     depends_on: [station]
+    environment:
+      EV_TLS: ${EV_TLS:-1}
     volumes: [layer-data:/layer-data:ro]
     networks:
       v2g: { ipv6_address: "fd15:118::20" }

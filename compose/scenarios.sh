@@ -8,6 +8,8 @@
 #   compose/scenarios.sh t3        the test layer stops during a session and comes
 #                                  back: the session, the station's link to
 #                                  Imatra, a registry change made meanwhile
+#   compose/scenarios.sh t6        an EV without TLS: ISO 15118-2 over TCP through
+#                                  Imatra, then the EV with TLS again
 # Settings: IMATRA_DIR (Imatra checkout, as for up.sh), API (default
 # https://localhost/v1), DEVICE_ID (dev-01), T_WAIT (seconds per wait, 180).
 set -euo pipefail
@@ -125,9 +127,9 @@ layer_rules() { $H run --rm --no-deps -T layer layer rules "$DEV" "$1" >/dev/nul
 t3() {
   log "T3: the test layer stops during a session ($DEV)"
   start_watch
+  # plug-in sessions start at plug-in, before the V2G session: query from a minute back
+  local from_q; from_q=$(date -u -d '-60 sec' +%Y-%m-%dT%H:%M:%SZ)
   wait_for "device online and in a session" "$API/devices/$DEV" '.online == true and .session != null'
-  local started; started=$(jq -r '.session.started_at' <<<"$LAST")
-  local started_q; started_q=$(jq -rn --arg v "$started" '$v|@uri')   # "+00:00" in a query
   local ver0; ver0=$(jq -r '.registry.binding_ver' <<<"$LAST")
 
   # 1. the layer goes away while the session runs
@@ -136,21 +138,24 @@ t3() {
   log "test layer stopped (service and broker)"
 
   # 2. the running session ends normally: the layer was needed for its TLS handshake only
-  wait_for "the session started before the stop ended normally" "$API/sessions?device=$DEV&from=$started_q&open=false" \
-    "[.sessions[] | select(.started_at <= \"$down\" and .end_reason == \"ev_unplugged\")] | length > 0"
+  wait_for "the session running at the stop ended normally" "$API/sessions?device=$DEV&from=$from_q&open=false" \
+    "[.sessions[] | select(.started_at < \"$down\" and .ended_at > \"$down\" and .mode == \"iso15118-2\" and .end_reason == \"ev_unplugged\")] | length > 0"
 
-  # 3. while the layer is away: the station stays connected to Imatra; a registry change is queued
+  # 3. without the layer: the station stays connected to Imatra; the EV insists on TLS, the
+  #    station can only offer TCP (no signer), the EV declines, the station charges on PWM
+  #    after hlc_wait_s (IEC 61851 basic charging)
   layer_rules '{"topology":"integrated","rated_current_a":20}'
   log "registry change queued while the layer is away: rated_current_a 20 A"
-  sleep 60
-  api "$API/devices/$DEV" >/tmp/t3-dev.json || fail "GET device"
-  jq -e '.online == true' /tmp/t3-dev.json >/dev/null || fail "the station went offline at Imatra while the layer was away"
-  jq -e '.registry.rules.rated_current_a == null' /tmp/t3-dev.json >/dev/null \
+  wait_for "basic charging on PWM without the layer (plugged in, no V2G session, current flowing)" "$API/devices/$DEV" \
+    '.online == true and .charge != null and .session == null and (.metering.i_a[0] // 0) > 0'
+  $H logs --since "$down" station 2>/dev/null | grep -q "asked for TLS, offered TCP" \
+    || fail "the station did not answer SDP with TCP while the signer was away"
+  if $H logs --since "$down" station 2>/dev/null | grep -q "connected (TLS"; then
+    fail "a TLS connection although the signer was away"
+  fi
+  jq -e '.registry.rules.rated_current_a == null' <<<"$LAST" >/dev/null \
     || fail "the registry change reached Imatra although the layer was stopped"
-  log "ok: after 60 s without the layer the station is online at Imatra; the change has not arrived"
-  # what plug-ins did without the signer: recorded, not judged (EV enforces TLS)
-  log "plug-ins without the layer: $(api "$API/sessions?device=$DEV&from=$down" | \
-    jq -c "[.sessions[] | select(.started_at > \"$down\") | {mode, end_reason, v2g_sessions, duration_s}]")"
+  log "ok: SDP offered TCP, the EV declined, basic charging; the registry change has not arrived"
 
   # 4. the layer comes back: the queued change arrives, TLS sessions go on
   $H start layer-mqtt layer >/dev/null 2>&1
@@ -158,8 +163,9 @@ t3() {
   log "test layer started again"
   wait_for "the registry change arrived after the layer came back" "$API/devices/$DEV" \
     ".registry.rules.rated_current_a == 20 and .station_max_a == 20 and .registry.binding_ver > $ver0"
-  wait_for "a TLS session after the layer came back" "$API/sessions?device=$DEV&from=$up&open=false" \
-    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
+  wait_for "a TLS session ended after the layer came back" "$API/sessions?device=$DEV&from=$from_q&open=false" \
+    "[.sessions[] | select(.ended_at > \"$up\" and .mode == \"iso15118-2\" and .v2g_sessions > 0)] | length > 0"
+  $H logs --since "$up" station 2>/dev/null | grep -q "connected (TLSv1.2" || fail "no TLS connection after the layer came back"
 
   # 5. back to the start
   layer_rules '{"topology":"integrated"}'
@@ -168,8 +174,36 @@ t3() {
   log "T3 passed"
 }
 
+t6() {
+  log "T6: an EV without TLS ($DEV)"
+  start_watch
+  local since; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  EV_TLS=0 $H up -d --no-deps ev >/dev/null 2>&1
+  log "EV restarted without TLS"
+  wait_for "an ISO 15118-2 session over TCP, ended normally" "$API/sessions?device=$DEV&from=$since&open=false" \
+    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
+  log "summary: $(jq -c '[.sessions[] | select(.mode == "iso15118-2")][0] | {mode, end_reason, energy_wh, duration_s}' <<<"$LAST")"
+  $H logs --since "$since" station 2>/dev/null | grep -q "asked for TCP, offered TCP" \
+    || fail "the station log shows no SDP request for TCP"
+  $H logs --since "$since" station 2>/dev/null | grep -q "connected (TCP)" \
+    || fail "the station log shows no V2G connection over TCP"
+  if $H logs --since "$since" station 2>/dev/null | grep -q "connected (TLS"; then
+    fail "a TLS connection while the EV had TLS off"
+  fi
+  log "ok: SDP asked for TCP, the V2G connection was plain TCP"
+  local up; up=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  EV_TLS=1 $H up -d --no-deps ev >/dev/null 2>&1
+  log "EV restarted with TLS"
+  wait_for "a TLS session again" "$API/sessions?device=$DEV&from=$up&open=false" \
+    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
+  $H logs --since "$up" station 2>/dev/null | grep -q "connected (TLSv1.2" || fail "no TLS connection after the EV got TLS back"
+  stop_watch
+  log "T6 passed"
+}
+
 case "${1:-}" in
+  t6) t6 ;;
   t2) t2 ;;
   t3) t3 ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,15p' "$0"; exit 2 ;;
 esac

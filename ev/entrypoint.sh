@@ -6,6 +6,18 @@ ROOT=${V2G_ROOT:-/layer-data/pki/v2g-root.crt}
 until [ -f "$ROOT" ]; do echo "waiting for $ROOT"; sleep 2; done
 mkdir -p /ev/pki/iso15118_2/certs
 cp "$ROOT" /ev/pki/iso15118_2/certs/v2gRootCACert.pem
+# EV_TLS=0: an EV without TLS (asks for TCP in SDP, does not insist on TLS),
+# as many EVs with ISO 15118-2 EIM are
+if [ "${EV_TLS:-1}" = 0 ]; then
+  python - <<'PY'
+import json
+p = "/ev/evcc_config.json"
+c = json.load(open(p))
+c["useTls"], c["enforceTls"] = False, False
+json.dump(c, open(p, "w"), indent=1)
+PY
+  echo "EV without TLS"
+fi
 while true; do
   python -c "from iso15118.evcc.main import run; run()" || true
   sleep "${PAUSE_S:-20}"

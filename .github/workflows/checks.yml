@@ -105,6 +105,9 @@ jobs:
       - name: "Scenario T3: the test layer stops during a session"
         if: env.HAS_TOKEN == 'true'
         run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t3
+      - name: "Scenario T6: an EV without TLS"
+        if: env.HAS_TOKEN == 'true'
+        run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/scenarios.sh t6
       - name: Logs
         if: failure() && env.HAS_TOKEN == 'true'
         run: |
