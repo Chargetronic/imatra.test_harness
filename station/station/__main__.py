@@ -1,6 +1,6 @@
 """Run the test station.
 
-  python -m station --bootstrap dev-01.json [--iface eth0] [--port 15119]
+  python -m station --bootstrap dev-01.json [--iface eth0] [--port 64109]
       With the test layer (PKI_MODE=layer): certificate for the deployment
       from the layer, TLS to the EV with the layer's signature.
 
@@ -149,7 +149,7 @@ def main(argv=None):
     ap.add_argument("--address")
     ap.add_argument("--iface", default="eth0")
     ap.add_argument("--v2g-subnet", help="pick the interface holding an address in this IPv6 subnet")
-    ap.add_argument("--port", type=int, default=15119)
+    ap.add_argument("--port", type=int, default=64109, help="V2G TCP port (ISO 15118-2: 49152..65535)")
     ap.add_argument("--plug-at-start", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--unplug-after-s", type=float, default=10)
     ap.add_argument("--replug-s", type=float, default=0)
