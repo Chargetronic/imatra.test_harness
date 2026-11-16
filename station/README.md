@@ -30,6 +30,22 @@ Settings come only from the bootstrap package issued by the test layer.
 - SLAC, PLC modem driver, CP hardware, meter.
 - Any production endpoint, root or credential.
 
+## Run
+
+Started with the rest of the harness by [`../compose/up.sh`](../compose/up.sh).
+On its own:
+
+```sh
+python -m station --bootstrap dev-01.json --v2g-subnet fd15:118::/64   # with the test layer
+python -m station --device-id dev-01 --cert c.pem --key k.pem --ca ca.pem --address mqtt:8883  # PKI_MODE=own
+```
+
+After the EV closed its last connection the station unplugs (10 s), and
+plugs in again after `--replug-s` seconds (0 = never).
+
+Values the station cannot know without decoding EXI are stubs: telemetry
+current is the basic-mode limit or 16 A; energy is integrated from it.
+
 ## Requirements
 
 TK-1, TK-2, TK-3, TK-4, TK-6, TK-8, TK-9, TK-11, TK-12, TK-13 — see
