@@ -127,6 +127,7 @@ t3() {
   start_watch
   wait_for "device online and in a session" "$API/devices/$DEV" '.online == true and .session != null'
   local started; started=$(jq -r '.session.started_at' <<<"$LAST")
+  local started_q; started_q=$(jq -rn --arg v "$started" '$v|@uri')   # "+00:00" in a query
   local ver0; ver0=$(jq -r '.registry.binding_ver' <<<"$LAST")
 
   # 1. the layer goes away while the session runs
@@ -135,7 +136,7 @@ t3() {
   log "test layer stopped (service and broker)"
 
   # 2. the running session ends normally: the layer was needed for its TLS handshake only
-  wait_for "the session started before the stop ended normally" "$API/sessions?device=$DEV&from=$started&open=false" \
+  wait_for "the session started before the stop ended normally" "$API/sessions?device=$DEV&from=$started_q&open=false" \
     "[.sessions[] | select(.started_at <= \"$down\" and .end_reason == \"ev_unplugged\")] | length > 0"
 
   # 3. while the layer is away: the station stays connected to Imatra; a registry change is queued
