@@ -1,0 +1,258 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Contributors to the project. See NOTICE.
+
+asyncapi: 3.0.0
+info:
+  title: Device ↔ service layer
+  version: 1.0.0
+  description: |
+    What a device exchanges with the service layer, apart from its sessions
+    with a deployment: its client certificate for the deployment it is bound
+    to, and one signature per TLS handshake with the EV (the device
+    terminates TLS but holds no SECC key).
+
+    This server does not take part in these exchanges. They are specified
+    here so that every implementation of the layer — production or test —
+    is checked against the same contract. Other device ↔ layer exchanges are
+    not part of this contract.
+
+    Unknown fields are ignored (the list grows). Operations are written from
+    the **layer's** side. Every request carries an `id` chosen by the device;
+    the answer repeats it. A request that cannot be parsed, or has no `id`,
+    gets no answer.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+defaultContentType: application/json
+
+servers:
+  layer:
+    host: '{layer}:8883'
+    protocol: mqtts
+    protocolVersion: 3.1.1
+    description: |
+      The layer's broker. TLS 1.2, client certificate required: the device's
+      own certificate under the layer's CA (CN = device id), not the
+      certificate it uses with a deployment. ACL: a device may write
+      `dev/<own id>/sign/req`, `dev/<own id>/cred/req`,
+      `dev/<own id>/cred/moved` and read `dev/<own id>/sign/res`,
+      `dev/<own id>/cred/res`. Connections are short: at the start of an EV
+      session and once a day.
+    variables:
+      layer:
+        description: DNS name of the layer's broker
+    security:
+      - $ref: '#/components/securitySchemes/deviceCertificate'
+
+channels:
+  signReq:
+    address: dev/{deviceId}/sign/req
+    description: A digest to sign during the TLS handshake with the EV.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      signRequest: { $ref: '#/components/messages/signRequest' }
+  signRes:
+    address: dev/{deviceId}/sign/res
+    description: The signature or a refusal.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      signResponse: { $ref: '#/components/messages/signResponse' }
+  credReq:
+    address: dev/{deviceId}/cred/req
+    description: Request for a client certificate for the deployment the device is bound to.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      credRequest: { $ref: '#/components/messages/credRequest' }
+  credRes:
+    address: dev/{deviceId}/cred/res
+    description: The binding (deployment, address, root, certificate) or a refusal.
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      credResponse: { $ref: '#/components/messages/credResponse' }
+  credMoved:
+    address: dev/{deviceId}/cred/moved
+    description: The device now works with the deployment of the given binding (end of a move between operators).
+    parameters:
+      deviceId: { $ref: '#/components/parameters/deviceId' }
+    messages:
+      credMoved: { $ref: '#/components/messages/credMoved' }
+
+operations:
+  receiveSignReq:
+    action: receive
+    channel: { $ref: '#/channels/signReq' }
+    summary: One per TLS handshake with the EV
+    description: |
+      Checked before signing: the device is known and active; requests per
+      device per minute are limited; the algorithm and the digest size. The
+      layer never sees session data, only the digest. The device waits 3 s
+      for the answer; without one, the handshake is not completed and for
+      the next 60 s the device offers the EV a session without TLS (if the EV
+      allows it), otherwise basic charging.
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  sendSignRes:
+    action: send
+    channel: { $ref: '#/channels/signRes' }
+    summary: Signature (base64 DER) or refusal
+    description: QoS 0 — an answer after the handshake timeout is useless.
+    bindings:
+      mqtt: { qos: 0, retain: false }
+  receiveCredReq:
+    action: receive
+    channel: { $ref: '#/channels/credReq' }
+    summary: Once a day, at the time given by `next_req` of the previous answer
+    description: |
+      The CSR must be signed with the device's own key — the key of its
+      certificate with the layer (pinned on the first request). Certificates
+      issued per device per 24 h are limited.
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  sendCredRes:
+    action: send
+    channel: { $ref: '#/channels/credRes' }
+    summary: Binding and certificate (7 days), or refusal
+    bindings:
+      mqtt: { qos: 1, retain: false }
+  receiveCredMoved:
+    action: receive
+    channel: { $ref: '#/channels/credMoved' }
+    summary: Only during a move between operators
+    description: |
+      Sent once the device has connected to the deployment of the new
+      binding. A later `cred/req` with the new `binding_ver` ends the move as
+      well. The layer then tells both deployments (`spec/asyncapi-registry.yaml`).
+    bindings:
+      mqtt: { qos: 1, retain: false }
+
+components:
+  securitySchemes:
+    deviceCertificate:
+      type: X509
+      description: The device's certificate under the layer's CA, CN = device id; its key never leaves the device.
+
+  parameters:
+    deviceId:
+      description: Device id = CN of the device's certificate.
+      examples: ['dev-01']
+
+  messages:
+    signRequest:
+      name: SignRequest
+      payload: { $ref: '#/components/schemas/SignRequest' }
+      examples:
+        - name: request
+          payload: { v: 1, id: 'h-7f3a', alg: ecdsa-p256-sha256, digest: 'q0ZnHkI3lB7c1xu0nqv8Ckq7oF0aX3m8w1QnB8Zt0eM=' }
+    signResponse:
+      name: SignResponse
+      payload: { $ref: '#/components/schemas/SignResponse' }
+      examples:
+        - name: signed
+          payload: { v: 1, id: 'h-7f3a', sig: 'MEUCIQ…' }
+        - name: refused
+          payload: { v: 1, id: 'h-7f3a', error: revoked }
+    credRequest:
+      name: CredRequest
+      payload: { $ref: '#/components/schemas/CredRequest' }
+      examples:
+        - name: daily
+          payload: { v: 1, id: 'c-20261116', csr: "<PEM certificate request>", binding_ver: 12 }
+    credResponse:
+      name: CredResponse
+      payload: { $ref: '#/components/schemas/CredResponse' }
+      examples:
+        - name: issued
+          payload:
+            v: 1
+            id: 'c-20261116'
+            cloud_id: deployment-a
+            address: 'broker.example.org:8883'
+            binding_ver: 12
+            ca: "<PEM root of the deployment>"
+            cert: "<PEM client certificate>"
+            not_after: '2026-11-23T00:41:00Z'
+            next_req: '2026-11-16T22:41:00Z'
+        - name: refused
+          payload: { v: 1, id: 'c-20261116', error: unbound }
+    credMoved:
+      name: CredMoved
+      payload: { $ref: '#/components/schemas/CredMoved' }
+      examples:
+        - name: moved
+          payload: { v: 1, binding_ver: 13 }
+
+  schemas:
+    SignRequest:
+      type: object
+      required: [v, id, alg, digest]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, minLength: 1, description: 'Chosen by the device; repeated in the answer' }
+        alg: { type: string, enum: [ecdsa-p256-sha256], description: 'ISO 15118-2 TLS 1.2 ECDHE_ECDSA: signature of ServerKeyExchange' }
+        digest: { type: string, contentEncoding: base64, description: 'SHA-256 of the data to sign, 32 bytes' }
+    SignResponse:
+      type: object
+      required: [v, id]
+      description: Exactly one of `sig` and `error`.
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string }
+        sig: { type: string, contentEncoding: base64, description: 'ECDSA signature, ASN.1 DER' }
+        error:
+          type: string
+          enum: [no key, registry unavailable, unknown device, revoked, rate limit, unsupported alg, bad digest, sign failed]
+          description: |
+            no key — the layer has no SECC key; registry unavailable — try
+            again later; unknown device; revoked; rate limit — too many
+            requests from the device in the last minute; unsupported alg;
+            bad digest — not base64 or not 32 bytes; sign failed.
+    CredRequest:
+      type: object
+      required: [v, id, csr, binding_ver]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, minLength: 1, maxLength: 64, description: 'Chosen by the device; repeated in the answer' }
+        csr: { type: string, description: 'PEM certificate request, signed with the device''s own key' }
+        binding_ver: { type: integer, format: int64, description: 'The binding the device is connected with now; 0 before the first' }
+    Binding:
+      type: object
+      properties:
+        cloud_id: { type: string, description: 'Deployment id' }
+        address: { type: string, description: 'host:port of the deployment''s device listener; the device connects only here' }
+        binding_ver: { type: integer, format: int64 }
+        ca: { type: string, description: 'PEM root of the deployment; the device pins it for this binding' }
+        cert: { type: string, description: 'PEM client certificate, CN = device id, same key as the CSR, 7 days' }
+        not_after: { type: string, format: date-time }
+    CredResponse:
+      description: Either a binding (with optional `current` and `next_req`) or `error`.
+      allOf:
+        - $ref: '#/components/schemas/Binding'
+        - type: object
+          required: [v, id]
+          properties:
+            v: { type: integer, const: 1 }
+            id: { type: string }
+            current:
+              $ref: '#/components/schemas/Binding'
+              description: 'Only during a move between operators: the certificate renewed for the deployment the device is still on'
+            next_req: { type: string, format: date-time, description: 'When to ask next; absent — the device chooses (once a day)' }
+            error:
+              type: string
+              enum: [registry unavailable, unknown device, revoked, unbound, cloud disabled, no cloud ca, bad csr, key mismatch, rate limit]
+              description: |
+                registry unavailable — try again later; unknown device;
+                revoked; unbound — not bound to any deployment; cloud
+                disabled / no cloud ca — the deployment cannot be served now;
+                bad csr; key mismatch — the CSR is not signed with the
+                device's own key; rate limit — too many certificates in 24 h.
+    CredMoved:
+      type: object
+      required: [v, binding_ver]
+      properties:
+        v: { type: integer, const: 1 }
+        binding_ver: { type: integer, format: int64, description: 'The binding whose deployment the device now works with' }

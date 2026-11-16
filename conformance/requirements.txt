@@ -1,0 +1,4 @@
+PyYAML>=6
+jsonschema>=4.18
+paho-mqtt>=2.0  # sniff only
+pytest>=8       # tests only

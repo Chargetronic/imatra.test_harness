@@ -21,3 +21,15 @@ jobs:
           # have no access to the secret and run the key check only.
           REQUIRE_DENYLIST: ${{ github.repository == 'Chargetronic/imatra.test_harness' && github.event_name == 'push' && '1' || '0' }}
         run: bash scripts/check-repo.sh --history
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r conformance/requirements.txt
+      - name: Checker against the pinned contracts
+        working-directory: conformance
+        run: python -m pytest -q tests
