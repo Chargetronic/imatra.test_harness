@@ -3,6 +3,8 @@
 # test layer, test station, test EV. Nothing outside this machine is used.
 #   compose/up.sh                  IMATRA_DIR: Imatra checkout (default ../imatra.iso15118_server,
 #                                  cloned at contracts/IMATRA_REF if missing)
+#                                  IMATRA_REF=local: use the checkout as it is (no fetch)
+#                                  NO_STATION=1: layer and Imatra only (Imatra's load test)
 #   compose/e2e.sh                 watch one session end to end
 #   compose/down.sh [--volumes]
 set -euo pipefail
@@ -14,7 +16,9 @@ REF=${IMATRA_REF:-$(cat contracts/IMATRA_REF)}
 if [ ! -d "$IMATRA_DIR/.git" ]; then
   git clone -q https://github.com/Chargetronic/imatra.iso15118_server "$IMATRA_DIR"
 fi
-git -C "$IMATRA_DIR" fetch -q --depth 1 origin "$REF" && git -C "$IMATRA_DIR" checkout -q FETCH_HEAD
+if [ "$REF" != local ]; then
+  git -C "$IMATRA_DIR" fetch -q --depth 1 origin "$REF" && git -C "$IMATRA_DIR" checkout -q FETCH_HEAD
+fi
 echo "Imatra at $(git -C "$IMATRA_DIR" rev-parse --short HEAD)"
 
 # 1. the link network (harness ↔ Imatra broker), the test layer's trust roots and broker
@@ -47,6 +51,9 @@ $I up -d
 
 # 4. the layer service, one test station bound to the deployment
 $H up -d --build layer
+if [ -n "${NO_STATION:-}" ]; then
+  echo "layer and Imatra running (no station)"; exit 0
+fi
 $H run --rm --no-deps -T layer sh -c '[ -f /boot/dev-01.json ] || layer provision dev-01 > /boot/dev-01.json'
 $H run --rm --no-deps -T layer layer bind dev-01 || true
 $H run --rm --no-deps -T layer layer type dev-01 station

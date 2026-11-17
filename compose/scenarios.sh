@@ -153,9 +153,9 @@ t3() {
   log "registry change queued while the layer is away: rated_current_a 20 A"
   wait_for "basic charging on PWM without the layer (plugged in, no V2G session, current flowing)" "$API/devices/$DEV" \
     '.online == true and .charge != null and .session == null and (.metering.i_a[0] // 0) > 0'
-  $H logs --since "$down" station 2>/dev/null | grep -q "asked for TLS, offered TCP" \
+  station_log_has "$down" "asked for TLS, offered TCP" \
     || fail "the station did not answer SDP with TCP while the signer was away"
-  if $H logs --since "$down" station 2>/dev/null | grep -q "connected (TLS"; then
+  if station_log_has "$down" "connected (TLS"; then
     fail "a TLS connection although the signer was away"
   fi
   jq -e '.registry.rules.rated_current_a == null' <<<"$LAST" >/dev/null \
@@ -174,7 +174,7 @@ t3() {
   log "cable pulled and plugged in again (station and EV restarted)"
   wait_for "a TLS session ended after the layer came back" "$API/sessions?device=$DEV&from=$from_q&open=false" \
     "[.sessions[] | select(.ended_at > \"$up\" and .mode == \"iso15118-2\" and .v2g_sessions > 0)] | length > 0"
-  $H logs --since "$up" station 2>/dev/null | grep -q "connected (TLSv1.2" || fail "no TLS connection after the layer came back"
+  station_log_has "$up" "connected (TLSv1.2" || fail "no TLS connection after the layer came back"
 
   # 5. back to the start
   layer_rules '{"topology":"integrated"}'
@@ -305,29 +305,35 @@ t5() {
   log "T5 passed"
 }
 
+# station_log_has SINCE PATTERN: the station log since SINCE has PATTERN.
+# grep -c reads the whole log: with grep -q and pipefail, "docker compose logs"
+# could die of SIGPIPE and the check fail although the line is there.
+station_log_has() { $H logs --since "$1" station 2>/dev/null | grep -c -- "$2" >/dev/null; }
+
 t6() {
   log "T6: an EV without TLS ($DEV)"
   start_watch
-  local since; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   EV_TLS=0 $H up -d --no-deps ev >/dev/null 2>&1
+  # after the restart: the TLS EV's last session ends while it is replaced
+  local since; sleep 1; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "EV restarted without TLS"
   wait_for "an ISO 15118-2 session over TCP, ended normally" "$API/sessions?device=$DEV&from=$since&open=false" \
-    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
+    "[.sessions[] | select(.mode == \"iso15118-2\" and .end_reason == \"ev_unplugged\" and .v2g_sessions > 0 and .started_at >= \"${since%Z}\")] | length > 0"
   log "summary: $(jq -c '[.sessions[] | select(.mode == "iso15118-2")][0] | {mode, end_reason, energy_wh, duration_s}' <<<"$LAST")"
-  $H logs --since "$since" station 2>/dev/null | grep -q "asked for TCP, offered TCP" \
+  station_log_has "$since" "asked for TCP, offered TCP" \
     || fail "the station log shows no SDP request for TCP"
-  $H logs --since "$since" station 2>/dev/null | grep -q "connected (TCP)" \
+  station_log_has "$since" "connected (TCP)" \
     || fail "the station log shows no V2G connection over TCP"
-  if $H logs --since "$since" station 2>/dev/null | grep -q "connected (TLS"; then
+  if station_log_has "$since" "connected (TLS"; then
     fail "a TLS connection while the EV had TLS off"
   fi
   log "ok: SDP asked for TCP, the V2G connection was plain TCP"
-  local up; up=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   EV_TLS=1 $H up -d --no-deps ev >/dev/null 2>&1
+  local up; sleep 1; up=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   log "EV restarted with TLS"
   wait_for "a TLS session again" "$API/sessions?device=$DEV&from=$up&open=false" \
-    '[.sessions[] | select(.mode == "iso15118-2" and .end_reason == "ev_unplugged" and .v2g_sessions > 0)] | length > 0'
-  $H logs --since "$up" station 2>/dev/null | grep -q "connected (TLSv1.2" || fail "no TLS connection after the EV got TLS back"
+    "[.sessions[] | select(.mode == \"iso15118-2\" and .end_reason == \"ev_unplugged\" and .v2g_sessions > 0 and .started_at >= \"${up%Z}\")] | length > 0"
+  station_log_has "$up" "connected (TLSv1.2" || fail "no TLS connection after the EV got TLS back"
   stop_watch
   log "T6 passed"
 }

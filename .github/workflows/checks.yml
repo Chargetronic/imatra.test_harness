@@ -2,6 +2,7 @@ name: checks
 
 on:
   push:
+    branches: [main]  # branches are checked by their pull request (saves CI minutes)
   pull_request:
 
 permissions:

@@ -10,7 +10,7 @@ services:
       DEPLOYMENT: test-deployment
       DEPLOYMENT_ADDRESS: mqtt:8883
       DEPLOYMENT_BROKER: mqtt:8883
-      DEPLOYMENT_DNS: mqtt
+      DEPLOYMENT_DNS: ${DEPLOYMENT_DNS:-mqtt}
     volumes: [layer-data:/data]
     network_mode: none
   layer-mqtt:
