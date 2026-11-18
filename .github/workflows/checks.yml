@@ -82,7 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [layer, station]
     env:
-      HAS_TOKEN: ${{ secrets.CONTRACTS_READ_TOKEN != '' }}
+      # Imatra is public: the read token is needed only while it is private
+      HAS_TOKEN: 'true'
     steps:
       - uses: actions/checkout@v5
       - id: ref
@@ -93,7 +94,7 @@ jobs:
           repository: Chargetronic/imatra.iso15118_server
           ref: ${{ steps.ref.outputs.imatra }}
           path: imatra
-          token: ${{ secrets.CONTRACTS_READ_TOKEN }}
+          token: ${{ secrets.CONTRACTS_READ_TOKEN || github.token }}
       - name: Start Imatra and the harness
         if: env.HAS_TOKEN == 'true'
         run: IMATRA_DIR=$GITHUB_WORKSPACE/imatra compose/up.sh

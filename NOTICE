@@ -1,12 +1,23 @@
 Imatra Test Harness
-Copyright (c) 2026 Salute Solutions Oy (Chargetronic)
+Required Notice: Copyright (c) 2026 Salute Solutions Oy (Chargetronic, https://chargetronic.fi)
 
-The licence for this repository has not been chosen yet. Until it is, no
-licence is granted: all rights are reserved.
+This repository is licensed under the PolyForm Internal Use License 1.0.0
+(LICENSE): use and change it for the internal business operations of you and
+your company, here to develop and test software that works with the Imatra
+server. It may not be distributed.
 
-The intended licence permits use, modification and redistribution only for
-developing and testing software that works with the Imatra server. Production
-use is not intended.
+The harness is a set of emulators on virtual machines and containers: a test
+service layer, a test charging station without SLAC, PLC modem, CP hardware or
+meter, and a test EV. It reproduces the message flow between a cloud server, a
+charging device and a vehicle for testing only; it is not a product.
 
-Third-party components used by this harness are distributed under their own
-licences.
+Patents. The patent licence of the PolyForm terms covers using this software
+as permitted, and nothing else. No licence is granted under the patents of
+Salute Solutions Oy (FI 20246111 and the related applications) for electric
+vehicle supply equipment, charging devices, adapters or vehicles, or for
+making, selling or operating them; such licences are granted separately by
+Chargetronic.
+
+Third-party components (Josev, libcbv2g) keep their own licences. The copies
+of the Imatra contracts in contracts/ are under the Apache License 2.0, as in
+the Imatra repository.
