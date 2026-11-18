@@ -15,6 +15,11 @@
 #                                  registry by scripts/registry.sh (stops the rest)
 #   compose/scenarios.sh t6        an EV without TLS: ISO 15118-2 over TCP through
 #                                  Imatra, then the EV with TLS again
+#   compose/scenarios.sh t7        negative security checks (Imatra
+#                                  docs/security-review.md): foreign and expired
+#                                  certificates, reserved and wildcard CNs, foreign
+#                                  topics, a blocked device, keys and rights, rate
+#                                  limits, nothing internal published on the host
 # Settings: IMATRA_DIR (Imatra checkout, as for up.sh), API (default
 # https://localhost/v1), DEVICE_ID (dev-01), T_WAIT (seconds per wait, 180).
 set -euo pipefail
@@ -338,11 +343,133 @@ t6() {
   log "T6 passed"
 }
 
+# T7 sends messages outside the contracts on purpose (to topics it must not
+# reach), so it runs without the watcher; an observer on the services'
+# listener sees everything that gets through and nothing else.
+t7() {
+  log "T7: negative security checks"
+  local w mark net=imatra-harness-server_default pw
+  w=$(mktemp -d); chmod 755 "$w"; mark="t7-$(openssl rand -hex 4)"
+  pw=$(grep '^MQTT_SERVER_PASSWORD=' "$IMATRA_DIR/.env" | cut -d= -f2-)
+  code() { curl -sk -o /dev/null -w '%{http_code}' "$@"; }
+
+  # --- certificates: the deployment CA of the test layer, and a foreign CA ---
+  $H run --rm --no-deps -T layer-init sh -c 'cat /data/pki/deployments/test-deployment/ca.crt' > "$w/ca.crt"
+  $H run --rm --no-deps -T layer-init sh -c 'cat /data/pki/deployments/test-deployment/ca.key' > "$w/ca.key"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=t7-foreign-ca \
+    -days 1 -keyout "$w/other.key" -out "$w/other.crt" 2>/dev/null
+  csr() { openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=$2" \
+            -keyout "$w/$1.key" -out "$w/$1.csr" 2>/dev/null; }
+  mk() { # name CN [CA]: a certificate for one day
+    csr "$1" "$2"
+    openssl x509 -req -in "$w/$1.csr" -CA "$w/${3:-ca}.crt" -CAkey "$w/${3:-ca}.key" \
+      -set_serial "0x$(openssl rand -hex 8)" -days 1 -out "$w/$1.crt" 2>/dev/null
+  }
+  mk own "$DEV"; mk foreign "$DEV" other; mk server server; mk plus '+'; mk hash '#'
+  # an expired one (openssl ca: dates in the past, works with OpenSSL 3.0)
+  csr expired "$DEV"; : > "$w/index.txt"; echo 01 > "$w/serial"
+  printf '[ca]\ndefault_ca=t\n[t]\ndatabase=%s/index.txt\nnew_certs_dir=%s\nserial=%s/serial\ndefault_md=sha256\npolicy=p\n[p]\ncommonName=supplied\n' \
+    "$w" "$w" "$w" > "$w/ca.cnf"
+  openssl ca -batch -notext -config "$w/ca.cnf" -cert "$w/ca.crt" -keyfile "$w/ca.key" -in "$w/expired.csr" \
+    -out "$w/expired.crt" -startdate 20240101000000Z -enddate 20240201000000Z >/dev/null 2>&1 \
+    || fail "could not make the expired certificate"
+  chmod 0644 "$w"/*
+  log "test certificates: own, foreign CA, expired, CN server, CN + and #"
+
+  mq() { docker run --rm --network "$net" -v "$w:/c:ro" eclipse-mosquitto:2 "$@"; }
+  # pub <cert> <topic>: publish the marker with that certificate; exit code of mosquitto_pub
+  pub() { mq mosquitto_pub -h mqtt -p 8883 --cafile /c/ca.crt --insecure --cert "/c/$1.crt" --key "/c/$1.key" \
+            -i "t7-$1-$RANDOM" -V mqttv5 -q 1 -t "$2" -m "$mark $1 $2" >/dev/null 2>&1; }
+  # the observer: everything on dev/# and registry/# from the services' account
+  $I exec -T mqtt mosquitto_sub -h 127.0.0.1 -p 1883 -u server -P "$pw" -i "t7-observer" \
+    -t 'dev/#' -t 'registry/#' -v -W 400 > "$w/seen" 2>/dev/null &
+  local obs=$!
+  sleep 2
+  seen() { sleep 2; grep -c -F -- "$mark $1 $2" "$w/seen" || true; }
+  must_reach()   { pub "$1" "$2" || fail "$1 could not publish to $2"; [ "$(seen "$1" "$2")" -gt 0 ] || fail "$1 → $2 did not arrive"; log "ok: $1 → $2 arrives (control)"; }
+  must_not()     { pub "$1" "$2" || true; [ "$(seen "$1" "$2")" -eq 0 ] || fail "$1 → $2 got through"; log "ok: $1 → $2 does not get through"; }
+  must_refuse()  { if pub "$1" "dev/$DEV/t7"; then fail "$1: the broker accepted the connection"; fi
+                   [ "$(seen "$1" "dev/$DEV/t7")" -eq 0 ] || fail "$1: a message got through"; log "ok: $1 certificate refused"; }
+
+  must_reach own "dev/$DEV/t7"
+  must_refuse foreign
+  must_refuse expired
+  must_not server "dev/$DEV/t7"; must_not server "registry/t7"; must_not server "svc/t7"
+  must_not plus "dev/$DEV/t7"; must_not hash "dev/$DEV/t7"
+  must_not own "dev/t7-other/t7"; must_not own "registry/t7"
+
+  # receiving another device's topic: a subscriber with the device's certificate
+  # gets nothing published to dev/t7-other/#, and does get its own topic (control)
+  recv() { # <topic>: 1 if the device's subscriber received the marker
+    mq mosquitto_sub -h mqtt -p 8883 --cafile /c/ca.crt --insecure --cert /c/own.crt --key /c/own.key \
+      -i "t7-sub-$RANDOM" -V mqttv5 -t "$1" -C 1 -W 8 > "$w/recv" 2>/dev/null &
+    local p=$!; sleep 3
+    imatra_pub "$1" "$mark recv $1"
+    wait "$p" || true
+    grep -c -F -- "$mark recv" "$w/recv" || true
+  }
+  [ "$(recv "dev/$DEV/t7")" -gt 0 ] || fail "the device did not receive its own topic (control)"
+  log "ok: the device receives its own topic (control)"
+  [ "$(recv "dev/t7-other/t7")" -eq 0 ] || fail "the device received another device's topic"
+  log "ok: the device does not receive another device's topic"
+
+  # a blocked device keeps its connection but can neither publish nor receive
+  api -X PUT "$API/devices/$DEV/block" -d '{"reason":"T7"}' >/dev/null || fail "block"
+  sleep 10
+  must_not own "dev/$DEV/t7"
+  [ "$(recv "dev/$DEV/t7")" -eq 0 ] || fail "the blocked device received its own topic"
+  log "ok: the blocked device receives nothing"
+  api -X DELETE "$API/devices/$DEV/block" >/dev/null || fail "unblock"
+  sleep 10
+  must_reach own "dev/$DEV/t7"
+  kill "$obs" 2>/dev/null || true
+
+  # --- operator API ---
+  [ "$(code "$API/devices")" = 401 ] || fail "a request without a key was not refused"
+  [ "$(code -H "X-API-Key: ct_t7-made-up-$(openssl rand -hex 16)" "$API/devices")" = 401 ] || fail "a made-up key was not refused"
+  log "ok: without a key and with a made-up key: 401"
+  local rk rn="t7-read-$RANDOM"
+  rk=$($I exec -T api python -m app.keys create "$rn" --rights read 2>/dev/null | tail -1)
+  [ "$(code -H "X-API-Key: $rk" "$API/devices")" = 200 ] || fail "the read key does not read"
+  [ "$(code -X POST -H "X-API-Key: $rk" -H 'Content-Type: application/json' -d '{"limit_a":10,"duration_s":60}' \
+        "$API/devices/$DEV/limit")" = 403 ] || fail "a key without control set a limit"
+  log "ok: a key with read only: 200 on read, 403 on a command"
+  $I exec -T api python -m app.keys revoke "$rn" >/dev/null 2>&1 || fail "revoke"
+  local end=$(( $(date +%s) + 40 )) c=200
+  while [ "$(date +%s)" -lt "$end" ]; do c=$(code -H "X-API-Key: $rk" "$API/devices"); [ "$c" = 401 ] && break; sleep 3; done
+  [ "$c" = 401 ] || fail "a revoked key still works after 40 s"
+  log "ok: a revoked key is refused within 40 s"
+  for path in /docs /openapi.json /redoc /metrics /admin; do
+    [ "$(code "https://localhost$path")" = 404 ] || fail "https://localhost$path is routed"
+  done
+  log "ok: only /v1 and /health are routed"
+
+  # --- nothing internal published on the host ---
+  local open
+  open=$(ss -ltnH | awk '{print $4}' | grep -E ':(1883|5432|6379|8000|8090|2019)$' || true)
+  [ -z "$open" ] || fail "internal ports listening on the host: $open"
+  log "ok: 1883, Postgres, Valkey, the API, the engines' 8090 and Caddy's admin not published"
+
+  # --- rate limits (last: they hold this address for a minute) ---
+  local n429
+  n429=$(seq 90 | xargs -P 15 -I{} curl -sk -o /dev/null -w '%{http_code}\n' "$API/devices" | grep -c '^429$' || true)
+  [ "$n429" -gt 0 ] || fail "no 429 after 90 requests without a key in a minute"
+  log "ok: requests without a key over the per-address limit: $n429 × 429"
+  n429=$(seq 1400 | xargs -P 30 -I{} sh -c 'curl -sk -o /dev/null -w "%{http_code}\n" -H "X-API-Key: ct_made-up-{}-'"$RANDOM"'" "$0"' "$API/devices" \
+         | grep -c '^429$' || true)
+  [ "$n429" -gt 0 ] || fail "no 429 for 1400 made-up keys from one address in a minute"
+  log "ok: made-up keys over the per-address limit: $n429 × 429"
+  log "waiting 65 s for the rate limits to reset"; sleep 65
+  rm -rf "$w"
+  log "T7 passed"
+}
+
 case "${1:-}" in
   t4) t4 ;;
   t5) t5 ;;
   t6) t6 ;;
   t2) t2 ;;
   t3) t3 ;;
+  t7) t7 ;;
   *) sed -n '2,20p' "$0"; exit 2 ;;
 esac
