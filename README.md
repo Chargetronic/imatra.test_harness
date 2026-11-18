@@ -75,6 +75,10 @@ anyone — gives access to production systems.
 
 ## Licence
 
-To be decided. Use of this code will be limited to developing and testing
-software that works with Imatra. See [NOTICE](NOTICE). Third-party components
-(Josev, libcbv2g) keep their own licences.
+[PolyForm Internal Use 1.0.0](LICENSE): use and change the harness inside your
+company to develop and test software that works with Imatra; no distribution.
+The harness emulates a station, an EV and a service layer for testing only: no
+licence is granted under Chargetronic's patents for charging equipment, devices
+or vehicles ([NOTICE](NOTICE)). The Imatra server itself is under the Apache
+License 2.0. Third-party components (Josev, libcbv2g) keep their own licences;
+the copies of the Imatra contracts in `contracts/` are under the Apache License 2.0.
