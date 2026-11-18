@@ -348,6 +348,9 @@ t6() {
 # listener sees everything that gets through and nothing else.
 t7() {
   log "T7: negative security checks"
+  # the device must be served (T4 revokes it for good in the test layer: run T7 before T4)
+  api "$API/devices/$DEV" | jq -e '.blocked == null and .registry.state != "revoked"' >/dev/null \
+    || fail "$DEV is blocked or revoked (run t7 before t4)"
   local w mark net=imatra-harness-server_default pw
   w=$(mktemp -d); chmod 755 "$w"; mark="t7-$(openssl rand -hex 4)"
   pw=$(grep '^MQTT_SERVER_PASSWORD=' "$IMATRA_DIR/.env" | cut -d= -f2-)
