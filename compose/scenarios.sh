@@ -377,19 +377,21 @@ t7() {
   log "test certificates: own, foreign CA, expired, CN server, CN + and #"
 
   mq() { docker run --rm --network "$net" -v "$w:/c:ro" eclipse-mosquitto:2 "$@"; }
-  # pub <cert> <topic>: publish the marker with that certificate; exit code of mosquitto_pub
-  pub() { mq mosquitto_pub -h mqtt -p 8883 --cafile /c/ca.crt --insecure --cert "/c/$1.crt" --key "/c/$1.key" \
-            -i "t7-$1-$RANDOM" -V mqttv5 -q 1 -t "$2" -m "$mark $1 $2" >/dev/null 2>&1; }
+  # pub <cert> <topic>: publish a marker of its own (MSG) with that certificate; exit code of mosquitto_pub
+  local n=0 MSG
+  pub() { n=$((n + 1)); MSG="$mark $n $1 $2"
+          mq mosquitto_pub -h mqtt -p 8883 --cafile /c/ca.crt --insecure --cert "/c/$1.crt" --key "/c/$1.key" \
+            -i "t7-$1-$RANDOM" -V mqttv5 -q 1 -t "$2" -m "$MSG" >/dev/null 2>&1; }
   # the observer: everything on dev/# and registry/# from the services' account
   $I exec -T mqtt mosquitto_sub -h 127.0.0.1 -p 1883 -u server -P "$pw" -i "t7-observer" \
     -t 'dev/#' -t 'registry/#' -v -W 400 > "$w/seen" 2>/dev/null &
   local obs=$!
   sleep 2
-  seen() { sleep 2; grep -c -F -- "$mark $1 $2" "$w/seen" || true; }
-  must_reach()   { pub "$1" "$2" || fail "$1 could not publish to $2"; [ "$(seen "$1" "$2")" -gt 0 ] || fail "$1 → $2 did not arrive"; log "ok: $1 → $2 arrives (control)"; }
-  must_not()     { pub "$1" "$2" || true; [ "$(seen "$1" "$2")" -eq 0 ] || fail "$1 → $2 got through"; log "ok: $1 → $2 does not get through"; }
+  seen() { sleep 2; grep -c -F -- "$MSG" "$w/seen" || true; }   # the last marker sent
+  must_reach()   { pub "$1" "$2" || fail "$1 could not publish to $2"; [ "$(seen)" -gt 0 ] || fail "$1 → $2 did not arrive"; log "ok: $1 → $2 arrives (control)"; }
+  must_not()     { pub "$1" "$2" || true; [ "$(seen)" -eq 0 ] || fail "$1 → $2 got through"; log "ok: $1 → $2 does not get through"; }
   must_refuse()  { if pub "$1" "dev/$DEV/t7"; then fail "$1: the broker accepted the connection"; fi
-                   [ "$(seen "$1" "dev/$DEV/t7")" -eq 0 ] || fail "$1: a message got through"; log "ok: $1 certificate refused"; }
+                   [ "$(seen)" -eq 0 ] || fail "$1: a message got through"; log "ok: $1 certificate refused"; }
 
   must_reach own "dev/$DEV/t7"
   must_refuse foreign
@@ -404,9 +406,9 @@ t7() {
     mq mosquitto_sub -h mqtt -p 8883 --cafile /c/ca.crt --insecure --cert /c/own.crt --key /c/own.key \
       -i "t7-sub-$RANDOM" -V mqttv5 -t "$1" -C 1 -W 8 > "$w/recv" 2>/dev/null &
     local p=$!; sleep 3
-    imatra_pub "$1" "$mark recv $1"
+    n=$((n + 1)); imatra_pub "$1" "$mark recv $n $1"
     wait "$p" || true
-    grep -c -F -- "$mark recv" "$w/recv" || true
+    grep -c -F -- "$mark recv $n " "$w/recv" || true
   }
   [ "$(recv "dev/$DEV/t7")" -gt 0 ] || fail "the device did not receive its own topic (control)"
   log "ok: the device receives its own topic (control)"
